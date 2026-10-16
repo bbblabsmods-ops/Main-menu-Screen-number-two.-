@@ -6,9 +6,10 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -24,22 +26,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiOff
-import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,8 +59,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,153 +75,236 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val Bg = Color(0xFF111720)
-private val PillBg = Color(0xFF0A0F15)
+private val BgTop = Color(0xFF151A2E)
+private val BgBottom = Color(0xFF07090F)
+private val Accent = Color(0xFF7C5CFF)
+private val Glass = Color(0x14FFFFFF)
+private val GlassBorder = Color(0x22FFFFFF)
 private val Dim = Color(0xFF8A94A3)
+
+private enum class Page(val title: String) {
+    GAMES("Games"),
+    APPS("Apps"),
+    TOOLS("Tools"),
+}
+
+private fun iconFor(page: Page): ImageVector = when (page) {
+    Page.GAMES -> Icons.Default.Star
+    Page.APPS -> Icons.Default.Apps
+    Page.TOOLS -> Icons.Default.Build
+}
 
 @Composable
 fun LauncherScreen(viewModel: LauncherViewModel) {
     val apps by viewModel.apps.collectAsStateWithLifecycle()
+    val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
 
-    var tab by remember { mutableStateOf(LauncherTab.GAMES) }
+    var page by remember { mutableStateOf(Page.GAMES) }
     var sort by remember { mutableStateOf(SortMode.NAME) }
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    var sortMenu by remember { mutableStateOf(false) }
-    var settingsMenu by remember { mutableStateOf(false) }
+    var selectedHz by remember { mutableStateOf<Int?>(null) }
 
-    val visible = remember(apps, tab, sort, query) {
-        apps.asSequence()
-            .filter { it.tab == tab }
-            .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
-            .let {
-                when (sort) {
-                    SortMode.NAME -> it.sortedBy { a -> a.label.lowercase() }
-                    SortMode.RECENT -> it.sortedByDescending { a -> a.installTime }
-                }
-            }
-            .toList()
+    val listTab: LauncherTab? = when (page) {
+        Page.GAMES -> LauncherTab.GAMES
+        Page.APPS -> LauncherTab.APPS
+        Page.TOOLS -> null
     }
 
-    Box(Modifier.fillMaxSize().background(Bg)) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 20.dp)) {
-
-            // Header: status | tabs | actions
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                    StatusInfo()
-                }
-                TabPill(selected = tab, onSelect = { tab = it })
-                Row(
-                    Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box {
-                        IconButton(onClick = { sortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Color.White)
-                        }
-                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                            SortMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = { Text(mode.label) },
-                                    onClick = { sort = mode; sortMenu = false },
-                                )
-                            }
-                        }
+    val visible = remember(apps, page, sort, query) {
+        val t = listTab
+        if (t == null) {
+            emptyList<AppEntry>()
+        } else {
+            apps.asSequence()
+                .filter { it.tab == t }
+                .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
+                .let {
+                    when (sort) {
+                        SortMode.NAME -> it.sortedBy { a -> a.label.lowercase() }
+                        SortMode.RECENT -> it.sortedByDescending { a -> a.installTime }
                     }
+                }
+                .toList()
+        }
+    }
+
+    Row(
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
+            .padding(20.dp)
+    ) {
+        Rail(
+            page = page,
+            onSelect = {
+                page = it
+                query = ""
+                searching = false
+            },
+        )
+        Spacer(Modifier.width(22.dp))
+
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+
+            // Header
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(page.title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                if (listTab != null) {
+                    Spacer(Modifier.width(12.dp))
+                    Text("${visible.size}", color = Dim, fontSize = 16.sp)
+                }
+                Spacer(Modifier.weight(1f))
+                if (listTab != null) {
+                    Pill(sort.label) {
+                        sort = if (sort == SortMode.NAME) SortMode.RECENT else SortMode.NAME
+                    }
+                    Spacer(Modifier.width(4.dp))
                     IconButton(onClick = {
                         searching = !searching
                         if (!searching) query = ""
                     }) {
                         Icon(Icons.Default.Search, "Search", tint = Color.White)
                     }
-                    Box {
-                        IconButton(onClick = { settingsMenu = true }) {
-                            Icon(Icons.Default.Settings, "Settings", tint = Color.White)
-                        }
-                        DropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
-                            // Placeholder: this is where "Your games", "Unknown sources", etc. will go.
-                            DropdownMenuItem(
-                                text = { Text("Launcher settings (coming soon)") },
-                                onClick = { settingsMenu = false },
-                            )
-                        }
-                    }
+                    Spacer(Modifier.width(8.dp))
                 }
+                StatusInfo()
             }
 
-            if (searching) {
+            if (searching && listTab != null) {
                 val focus = remember { FocusRequester() }
                 LaunchedEffect(Unit) { focus.requestFocus() }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     singleLine = true,
-                    placeholder = { Text("Search ${tab.title.lowercase()}") },
+                    placeholder = { Text("Search ${page.title.lowercase()}") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp).focusRequester(focus),
                 )
             }
 
             Spacer(Modifier.size(16.dp))
 
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(if (tab.wide) 210.dp else 112.dp),
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                items(visible, key = { it.packageName }) { app ->
-                    AppCell(
-                        app = app,
-                        onLaunch = { viewModel.launch(app) },
-                        onInfo = { viewModel.openAppInfo(app) },
-                        onMove = { viewModel.moveTo(app, it) },
+            if (page == Page.TOOLS) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    ToolsPage(
+                        viewModel = viewModel,
+                        selectedHz = selectedHz,
+                        onPickHz = { hz ->
+                            selectedHz = hz
+                            viewModel.setRefreshRate(hz)
+                        },
                     )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(if (page == Page.GAMES) 190.dp else 120.dp),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    items(visible, key = { it.packageName }) { app ->
+                        AppCell(
+                            app = app,
+                            onLaunch = { viewModel.launch(app) },
+                            onInfo = { viewModel.openAppInfo(app) },
+                            onMove = { viewModel.moveTo(app, it) },
+                        )
+                    }
                 }
             }
         }
+    }
 
-        // Home handle
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 10.dp)
-                .size(width = 72.dp, height = 6.dp)
-                .clip(CircleShape)
-                .background(Color(0xFFBFC5CE))
+    // Result of a refresh-rate change
+    refreshResult?.let { r ->
+        val clipboard = LocalClipboardManager.current
+        val cmd = "setprop debug.oculus.refreshRate ${r.hz}"
+        val supported = r.hz in listOf(60, 72, 90, 120)
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRefreshResult() },
+            title = {
+                Text(if (r.applied) "Refresh rate set to ${r.hz} Hz" else "Couldn't set ${r.hz} Hz directly")
+            },
+            text = {
+                Text(
+                    when {
+                        r.applied -> "The new rate should apply now."
+                        !supported -> "${r.hz} Hz isn't a Quest refresh rate, so Quest will most likely ignore it. " +
+                            "Quest supports 60, 72, 90 and 120 Hz."
+                        else -> "Quest only lets apps change this through ADB. Run this command in an ADB shell " +
+                            "(for example in StripesADB):\n\n$cmd"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (!r.applied) clipboard.setText(AnnotatedString(cmd))
+                    viewModel.dismissRefreshResult()
+                }) {
+                    Text(if (r.applied) "OK" else "Copy command")
+                }
+            },
+            dismissButton = {
+                if (!r.applied) {
+                    TextButton(onClick = { viewModel.dismissRefreshResult() }) { Text("Close") }
+                }
+            },
         )
     }
 }
 
 @Composable
-private fun TabPill(selected: LauncherTab, onSelect: (LauncherTab) -> Unit) {
-    Row(
-        Modifier.clip(RoundedCornerShape(50)).background(PillBg).padding(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun Rail(page: Page, onSelect: (Page) -> Unit) {
+    val shape = RoundedCornerShape(32.dp)
+    Column(
+        Modifier
+            .fillMaxHeight()
+            .width(104.dp)
+            .clip(shape)
+            .background(Glass)
+            .border(1.dp, GlassBorder, shape)
+            .padding(vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        LauncherTab.entries.forEach { t ->
-            val isSel = t == selected
-            Row(
+        Page.entries.forEach { p ->
+            val selected = p == page
+            Column(
                 Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(if (isSel) Color(0xFF1B2330) else Color.Transparent)
-                    .combinedClickable(onClick = { onSelect(t) })
-                    .padding(horizontal = 22.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .width(84.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(if (selected) Accent else Color.Transparent)
+                    .clickable { onSelect(p) }
+                    .padding(vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (t == LauncherTab.GAMES) {
-                    Icon(
-                        Icons.Default.Star, null,
-                        tint = if (isSel) Color.White else Dim,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                }
-                Text(t.title, color = if (isSel) Color.White else Dim, fontSize = 16.sp)
+                Icon(
+                    iconFor(p), p.title,
+                    tint = if (selected) Color.White else Dim,
+                    modifier = Modifier.size(26.dp),
+                )
+                Spacer(Modifier.size(4.dp))
+                Text(p.title, color = if (selected) Color.White else Dim, fontSize = 12.sp)
             }
         }
     }
+}
+
+@Composable
+private fun Pill(text: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Text(
+        text,
+        color = Color.White,
+        fontSize = 14.sp,
+        modifier = Modifier
+            .clip(shape)
+            .background(Glass)
+            .border(1.dp, GlassBorder, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+    )
 }
 
 @Composable
@@ -253,7 +345,96 @@ private fun StatusInfo() {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ToolsPage(
+    viewModel: LauncherViewModel,
+    selectedHz: Int?,
+    onPickHz: (Int) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        ToolCard(
+            "Refresh rate",
+            "Quest modes are 60, 72, 90 and 120 Hz. 200 Hz isn't a Quest mode, so it will probably be ignored.",
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf(60, 72, 90, 120, 200).forEach { hz ->
+                    HzChip(Modifier.weight(1f), hz, hz == selectedHz) { onPickHz(hz) }
+                }
+            }
+        }
+
+        ToolCard("Shortcuts", null) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ActionButton(Modifier.weight(1f), "Android Settings") { viewModel.openAndroidSettings() }
+                ActionButton(Modifier.weight(1f), "YouTube VR") { viewModel.openYouTubeVr() }
+                ActionButton(Modifier.weight(1f), "Developer options") { viewModel.openDeveloperSettings() }
+            }
+        }
+
+        ToolCard(
+            "Wireless debugging",
+            "Status: not connected. The in-app connection comes in the next update. " +
+                "For now: turn on Wireless debugging in Developer options, pair it in StripesADB, " +
+                "then tap a refresh rate above and use the copied command.",
+        ) {}
+    }
+}
+
+@Composable
+private fun ToolCard(title: String, note: String?, content: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(24.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Glass)
+            .border(1.dp, GlassBorder, shape)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        if (note != null) {
+            Text(note, color = Dim, fontSize = 13.sp)
+        }
+        content()
+    }
+}
+
+@Composable
+private fun HzChip(modifier: Modifier, hz: Int, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier
+            .clip(shape)
+            .background(if (selected) Accent else Color(0x1AFFFFFF))
+            .border(1.dp, if (selected) Accent else GlassBorder, shape)
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("$hz Hz", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ActionButton(modifier: Modifier, text: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier
+            .clip(shape)
+            .background(Color(0x1AFFFFFF))
+            .border(1.dp, GlassBorder, shape)
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp, horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
+    }
+}
+
 @Composable
 private fun AppCell(
     app: AppEntry,
@@ -262,21 +443,22 @@ private fun AppCell(
     onMove: (LauncherTab) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
-    val wide = app.tab.wide
 
     Box {
-        if (wide) {
-            // Wide card: banner if the app has one, otherwise a gradient with its icon.
+        if (app.tab.wide) {
+            val shape = RoundedCornerShape(24.dp)
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(18.dp))
+                    .aspectRatio(1.3f)
+                    .clip(shape)
                     .background(
-                        Brush.linearGradient(listOf(Color(0xFF8E7CE0), Color(0xFF5B7FD6)))
+                        Brush.verticalGradient(
+                            listOf(Color(app.accent).copy(alpha = 0.65f), Color(0xFF0E1220))
+                        )
                     )
+                    .border(1.dp, GlassBorder, shape)
                     .combinedClickable(onClick = onLaunch, onLongClick = { menu = true }),
-                contentAlignment = Alignment.Center,
             ) {
                 if (app.banner != null) {
                     Image(
@@ -285,22 +467,62 @@ private fun AppCell(
                         contentScale = ContentScale.Crop,
                     )
                 } else {
-                    Image(app.icon, app.label, modifier = Modifier.size(64.dp))
+                    Image(
+                        app.icon, app.label,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(bottom = 22.dp)
+                            .size(78.dp)
+                            .clip(RoundedCornerShape(20.dp)),
+                    )
+                }
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000)))
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        app.label,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         } else {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
+                    .clip(RoundedCornerShape(22.dp))
                     .combinedClickable(onClick = onLaunch, onLongClick = { menu = true })
-                    .padding(6.dp),
+                    .padding(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Image(
-                    app.icon, app.label,
-                    modifier = Modifier.size(76.dp).clip(RoundedCornerShape(20.dp)),
-                )
+                val tile = RoundedCornerShape(24.dp)
+                Box(
+                    Modifier
+                        .size(80.dp)
+                        .clip(tile)
+                        .background(Glass)
+                        .border(1.dp, GlassBorder, tile),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        app.icon, app.label,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(6.dp)
+                            .clip(RoundedCornerShape(18.dp)),
+                    )
+                }
                 Spacer(Modifier.size(6.dp))
                 Text(
                     app.label,
