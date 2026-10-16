@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
@@ -36,6 +35,7 @@ class AppRepository(private val context: Context) {
         const val VR_CATEGORY = "com.oculus.intent.category.VR"
         const val KEY_FORCE_GAMES = "force_games"
         const val KEY_FORCE_APPS = "force_apps"
+        const val REFRESH_PROP = "debug.oculus.refreshRate"
     }
 
     fun load(): List<AppEntry> {
@@ -72,9 +72,12 @@ class AppRepository(private val context: Context) {
                 else -> autoGame
             }
 
+            // Never skip an app just because its icon failed to load.
             val iconBitmap = runCatching {
                 ri.loadIcon(pm).toBitmap(256, 256).asImageBitmap()
-            }.getOrNull() ?: continue
+            }.getOrElse {
+                pm.defaultActivityIcon.toBitmap(256, 256).asImageBitmap()
+            }
 
             val bannerBitmap = runCatching {
                 appInfo.loadBanner(pm)?.let { it.toBitmap(480, 270).asImageBitmap() }
@@ -84,10 +87,12 @@ class AppRepository(private val context: Context) {
                 pm.getPackageInfo(pkg, 0).lastUpdateTime
             }.getOrDefault(0L)
 
+            val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
+
             result += AppEntry(
                 packageName = pkg,
                 activityName = info.name,
-                label = ri.loadLabel(pm).toString(),
+                label = label,
                 icon = iconBitmap,
                 banner = bannerBitmap,
                 tab = if (isGame) LauncherTab.GAMES else LauncherTab.APPS,
@@ -125,4 +130,17 @@ class AppRepository(private val context: Context) {
             .putStringSet(KEY_FORCE_APPS, apps)
             .apply()
     }
+
+    /**
+     * Tries to set the Quest refresh rate. Normal apps are usually not allowed to,
+     * so we check the property afterwards and report whether it really changed.
+     */
+    fun setRefreshRate(hz: Int): Boolean = runCatching {
+        val set = Runtime.getRuntime().exec(arrayOf("sh", "-c", "setprop $REFRESH_PROP $hz"))
+        set.waitFor()
+        val get = Runtime.getRuntime().exec(arrayOf("getprop", REFRESH_PROP))
+        val value = get.inputStream.bufferedReader().readText().trim()
+        get.waitFor()
+        value == hz.toString()
+    }.getOrDefault(false)
 }
