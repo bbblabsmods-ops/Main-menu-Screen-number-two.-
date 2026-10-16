@@ -14,12 +14,17 @@ enum class SortMode(val label: String) {
     RECENT("Recently updated"),
 }
 
+data class RefreshResult(val hz: Int, val applied: Boolean)
+
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = AppRepository(application)
 
     private val _apps = MutableStateFlow<List<AppEntry>>(emptyList())
     val apps: StateFlow<List<AppEntry>> = _apps
+
+    private val _refreshResult = MutableStateFlow<RefreshResult?>(null)
+    val refreshResult: StateFlow<RefreshResult?> = _refreshResult
 
     fun refresh() {
         viewModelScope.launch {
@@ -34,5 +39,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun moveTo(app: AppEntry, tab: LauncherTab) {
         repo.moveTo(app, tab)
         refresh()
+    }
+
+    fun setRefreshRate(hz: Int) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { repo.setRefreshRate(hz) }
+            _refreshResult.value = RefreshResult(hz, ok)
+        }
+    }
+
+    fun dismissRefreshResult() {
+        _refreshResult.value = null
     }
 }
