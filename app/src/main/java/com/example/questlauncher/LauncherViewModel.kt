@@ -1,4 +1,3 @@
-
 package com.example.questlauncher
 
 import android.app.Application
