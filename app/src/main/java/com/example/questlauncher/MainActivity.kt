@@ -14,6 +14,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             LauncherScreen(viewModel)
         }
+        // Reconnects to Wireless debugging by itself if you've paired before.
+        viewModel.autoConnectQuietly()
     }
 
     override fun onResume() {
