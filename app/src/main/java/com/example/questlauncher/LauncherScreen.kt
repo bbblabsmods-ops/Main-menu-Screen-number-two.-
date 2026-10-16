@@ -374,12 +374,7 @@ private fun ToolsPage(
             }
         }
 
-        ToolCard(
-            "Wireless debugging",
-            "Status: not connected. The in-app connection comes in the next update. " +
-                "For now: turn on Wireless debugging in Developer options, pair it in StripesADB, " +
-                "then tap a refresh rate above and use the copied command.",
-        ) {}
+        AdbPanel(viewModel)
     }
 }
 
