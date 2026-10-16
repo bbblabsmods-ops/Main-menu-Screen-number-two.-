@@ -1,6 +1,8 @@
+
 package com.example.questlauncher
 
 import android.app.Application
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -50,5 +52,23 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun dismissRefreshResult() {
         _refreshResult.value = null
+    }
+
+    fun openAndroidSettings() {
+        if (!repo.openAndroidSettings()) toast("Couldn't open Android Settings")
+    }
+
+    fun openDeveloperSettings() {
+        if (!repo.openDeveloperSettings()) toast("Couldn't open developer options")
+    }
+
+    fun openYouTubeVr() {
+        if (!repo.openPackage("com.google.android.apps.youtube.vr.oculus")) {
+            toast("YouTube VR isn't installed")
+        }
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(getApplication<Application>(), message, Toast.LENGTH_SHORT).show()
     }
 }
