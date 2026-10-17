@@ -11,16 +11,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            LauncherScreen(viewModel)
-        }
+        setContent { LauncherScreen(viewModel) }
     }
 
     override fun onResume() {
         super.onResume()
-        // Picks up installs, uninstalls and updates made while we were away.
         viewModel.refresh()
-        // Reconnects to Wireless debugging by itself if you've paired before.
         viewModel.autoConnectQuietly()
     }
 }
