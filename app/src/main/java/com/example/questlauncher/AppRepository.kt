@@ -5,15 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
-import android.graphics.Color
-import android.provider.Settings
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 
-/**
- * Which tab an app belongs to. Add new entries here (e.g. YOUR_GAMES, UNKNOWN_SOURCES).
- */
 enum class LauncherTab(val title: String, val wide: Boolean) {
     GAMES("Games", wide = true),
     APPS("Apps", wide = false),
@@ -23,9 +18,9 @@ data class AppEntry(
     val packageName: String,
     val activityName: String,
     val label: String,
+    val labelJunk: Boolean,
     val icon: ImageBitmap,
-    val banner: ImageBitmap?,
-    val accent: Int,
+    val iconBlank: Boolean,
     val tab: LauncherTab,
     val installTime: Long,
 )
@@ -38,24 +33,42 @@ class AppRepository(private val context: Context) {
         const val VR_CATEGORY = "com.oculus.intent.category.VR"
         const val KEY_FORCE_GAMES = "force_games"
         const val KEY_FORCE_APPS = "force_apps"
-        const val REFRESH_PROP = "debug.oculus.refreshRate"
-        const val DEFAULT_ACCENT = 0xFF5B4FE0
+        const val KEY_HIDDEN = "hidden"
+
+        val SYSTEM_PREFIXES = listOf(
+            "com.oculus.os.",
+            "com.oculus.ossplash",
+            "com.oculus.shellenv",
+            "com.oculus.systemux",
+            "com.oculus.voidactivity",
+            "com.oculus.vrshell",
+        )
+    }
+
+    fun hiddenCount(): Int = hidden().size
+
+    private fun hidden(): Set<String> = prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet()
+
+    fun hide(app: AppEntry) {
+        prefs.edit().putStringSet(KEY_HIDDEN, hidden() + app.packageName).apply()
+    }
+
+    fun unhideAll() {
+        prefs.edit().putStringSet(KEY_HIDDEN, emptySet()).apply()
     }
 
     fun load(): List<AppEntry> {
         val pm = context.packageManager
         val forceGames = prefs.getStringSet(KEY_FORCE_GAMES, emptySet()) ?: emptySet()
         val forceApps = prefs.getStringSet(KEY_FORCE_APPS, emptySet()) ?: emptySet()
+        val hidden = hidden()
 
-        val vrPackages = pm.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY), 0
-        ).map { it.activityInfo.packageName }.toSet()
+        val vrIntent = Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY)
+        val vrPackages = pm.queryIntentActivities(vrIntent, 0).map { it.activityInfo.packageName }.toSet()
 
         val launchables = pm.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
-        ) + pm.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY), 0
-        )
+        ) + pm.queryIntentActivities(vrIntent, 0)
 
         val seen = HashSet<String>()
         val result = ArrayList<AppEntry>()
@@ -63,43 +76,37 @@ class AppRepository(private val context: Context) {
         for (ri in launchables) {
             val info = ri.activityInfo
             val pkg = info.packageName
-            if (pkg == context.packageName || !seen.add(pkg)) continue
+            if (pkg == context.packageName) continue
+            if (SYSTEM_PREFIXES.any { pkg.startsWith(it) }) continue
+            if (pkg in hidden) continue
+            if (!seen.add(pkg)) continue
 
             val appInfo = info.applicationInfo
             val autoGame = pkg in vrPackages ||
                 (appInfo.flags and ApplicationInfo.FLAG_IS_GAME) != 0 ||
                 appInfo.category == ApplicationInfo.CATEGORY_GAME
-
             val isGame = when {
                 pkg in forceGames -> true
                 pkg in forceApps -> false
                 else -> autoGame
             }
 
-            // Never skip an app just because its icon failed to load.
-            val iconBitmap: Bitmap = runCatching {
-                ri.loadIcon(pm).toBitmap(256, 256)
-            }.getOrElse {
-                pm.defaultActivityIcon.toBitmap(256, 256)
-            }
+            val bitmap = runCatching { ri.loadIcon(pm).toBitmap(256, 256) }.getOrNull()
+            val blank = bitmap == null || isBlank(bitmap)
+            val iconBitmap = (bitmap ?: Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)).asImageBitmap()
 
-            val bannerBitmap = runCatching {
-                appInfo.loadBanner(pm)?.let { it.toBitmap(480, 270).asImageBitmap() }
-            }.getOrNull()
+            val rawLabel = runCatching { ri.loadLabel(pm).toString() }.getOrDefault("")
+            val junk = rawLabel.isBlank() || rawLabel == pkg || (rawLabel.contains('.') && !rawLabel.contains(' '))
 
-            val installTime = runCatching {
-                pm.getPackageInfo(pkg, 0).lastUpdateTime
-            }.getOrDefault(0L)
-
-            val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
+            val installTime = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
 
             result += AppEntry(
                 packageName = pkg,
                 activityName = info.name,
-                label = label,
-                icon = iconBitmap.asImageBitmap(),
-                banner = bannerBitmap,
-                accent = accentOf(iconBitmap),
+                label = if (junk) fallbackName(pkg) else rawLabel,
+                labelJunk = junk,
+                icon = iconBitmap,
+                iconBlank = blank,
                 tab = if (isGame) LauncherTab.GAMES else LauncherTab.APPS,
                 installTime = installTime,
             )
@@ -107,82 +114,85 @@ class AppRepository(private val context: Context) {
         return result
     }
 
-    /** Average colour of the icon, used to tint the card. Falls back for black/white icons. */
-    private fun accentOf(bmp: Bitmap): Int {
-        val fallback = DEFAULT_ACCENT.toInt()
-        return runCatching {
-            val px = Bitmap.createScaledBitmap(bmp, 1, 1, true).getPixel(0, 0)
-            val r = Color.red(px)
-            val g = Color.green(px)
-            val b = Color.blue(px)
-            if (maxOf(r, g, b) < 50 || minOf(r, g, b) > 215) fallback
-            else Color.rgb(r, g, b)
-        }.getOrDefault(fallback)
+    private fun fallbackName(pkg: String): String =
+        pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+
+    /** True when the icon is empty or a single flat colour (what Quest gives us for most games). */
+    private fun isBlank(b: Bitmap): Boolean {
+        val w = b.width
+        val h = b.height
+        var first: Int? = null
+        var visible = 0
+        for (y in 0 until h step 16) {
+            for (x in 0 until w step 16) {
+                val p = b.getPixel(x, y)
+                if ((p ushr 24) > 20) visible++
+                if (first == null) first = p
+                else if (p != first) {
+                    val dr = Math.abs(((p shr 16) and 255) - ((first shr 16) and 255))
+                    val dg = Math.abs(((p shr 8) and 255) - ((first shr 8) and 255))
+                    val db = Math.abs((p and 255) - (first and 255))
+                    if (dr + dg + db > 24) return false
+                }
+            }
+        }
+        return true
     }
 
     fun launch(app: AppEntry) {
         val intent = Intent(Intent.ACTION_MAIN).apply {
             component = ComponentName(app.packageName, app.activityName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         }
-        startSafely(intent)
+        runCatching { context.startActivity(intent) }
     }
 
     fun openAppInfo(app: AppEntry) {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = android.net.Uri.parse("package:${app.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        startSafely(intent)
+        runCatching { context.startActivity(intent) }
     }
 
-    fun openAndroidSettings(): Boolean = startSafely(Intent(Settings.ACTION_SETTINGS))
+    fun openAndroidSettings(): Boolean = runCatching {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.isSuccess
 
-    fun openDeveloperSettings(): Boolean =
-        startSafely(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) || openAndroidSettings()
+    fun openDeveloperSettings(): Boolean = runCatching {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.isSuccess
 
-    /** Opens an installed app by package name. Returns false if it isn't installed. */
     fun openPackage(pkg: String): Boolean {
         val pm = context.packageManager
-        val direct = pm.getLaunchIntentForPackage(pkg)
-        if (direct != null) return startSafely(direct)
-
-        val vr = pm.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY).setPackage(pkg), 0
-        ).firstOrNull() ?: return false
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            component = ComponentName(vr.activityInfo.packageName, vr.activityInfo.name)
-        }
-        return startSafely(intent)
+        val intent = pm.getLaunchIntentForPackage(pkg)
+            ?: pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY), 0)
+                .firstOrNull { it.activityInfo.packageName == pkg }
+                ?.let {
+                    Intent(Intent.ACTION_MAIN).setComponent(
+                        ComponentName(it.activityInfo.packageName, it.activityInfo.name)
+                    )
+                }
+            ?: return false
+        return runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
     }
 
-    private fun startSafely(intent: Intent): Boolean = runCatching {
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        context.startActivity(intent)
-        true
-    }.getOrDefault(false)
-
-    /** Manually move an app to a different tab. Stored locally. */
     fun moveTo(app: AppEntry, tab: LauncherTab) {
         val games = (prefs.getStringSet(KEY_FORCE_GAMES, emptySet()) ?: emptySet()).toMutableSet()
         val apps = (prefs.getStringSet(KEY_FORCE_APPS, emptySet()) ?: emptySet()).toMutableSet()
         games.remove(app.packageName)
         apps.remove(app.packageName)
         if (tab == LauncherTab.GAMES) games.add(app.packageName) else apps.add(app.packageName)
-        prefs.edit()
-            .putStringSet(KEY_FORCE_GAMES, games)
-            .putStringSet(KEY_FORCE_APPS, apps)
-            .apply()
+        prefs.edit().putStringSet(KEY_FORCE_GAMES, games).putStringSet(KEY_FORCE_APPS, apps).apply()
     }
 
-    /**
-     * Tries to set the Quest refresh rate. Normal apps are usually not allowed to,
-     * so we check the property afterwards and report whether it really changed.
-     */
+    /** Quest normally refuses this without ADB; the screen then shows the command to copy. */
     fun setRefreshRate(hz: Int): Boolean = runCatching {
-        val set = Runtime.getRuntime().exec(arrayOf("sh", "-c", "setprop $REFRESH_PROP $hz"))
-        set.waitFor()
-        val get = Runtime.getRuntime().exec(arrayOf("getprop", REFRESH_PROP))
-        val value = get.inputStream.bufferedReader().readText().trim()
-        get.waitFor()
-        value == hz.toString()
+        Runtime.getRuntime().exec(arrayOf("setprop", "debug.oculus.refreshRate", hz.toString())).waitFor() == 0
     }.getOrDefault(false)
 }
