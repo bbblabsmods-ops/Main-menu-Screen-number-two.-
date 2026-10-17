@@ -28,7 +28,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -325,7 +324,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
                     Image(b, app.label, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Image(icon, app.label, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)))
+                        IconOrLetter(icon, app, onlineIcon != null, 64)
                         Spacer(Modifier.size(6.dp))
                         Text(
                             app.label,
@@ -348,7 +347,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
                     .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Image(icon, app.label, modifier = Modifier.size(76.dp).clip(RoundedCornerShape(20.dp)))
+                IconOrLetter(icon, app, onlineIcon != null, 76)
                 Spacer(Modifier.size(6.dp))
                 Text(
                     app.label,
@@ -376,6 +375,27 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
                 onClick = { menu = false; viewModel.openAppInfo(app) },
             )
         }
+    }
+}
+
+@Composable
+private fun IconOrLetter(icon: ImageBitmap, app: AppEntry, haveArt: Boolean, size: Int) {
+    val shape = RoundedCornerShape((size / 4).dp)
+    if (app.iconBlank && !haveArt) {
+        val hue = ((app.packageName.hashCode() and 0x7fffffff) % 360).toFloat()
+        Box(
+            Modifier.size(size.dp).clip(shape).background(Color.hsv(hue, 0.5f, 0.75f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                app.label.firstOrNull()?.uppercase() ?: "?",
+                color = Color.White,
+                fontSize = (size / 2).sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    } else {
+        Image(icon, app.label, modifier = Modifier.size(size.dp).clip(shape))
     }
 }
 
