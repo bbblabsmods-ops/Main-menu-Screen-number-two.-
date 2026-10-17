@@ -1,7 +1,7 @@
 package com.example.questlauncher
 
 import android.content.Context
-import android.net.ConnectivityManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import org.bouncycastle.asn1.x500.X500Name
@@ -11,7 +11,6 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.math.BigInteger
-import java.net.Inet4Address
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
@@ -25,10 +24,6 @@ import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-/**
- * Talks to this headset's own Wireless debugging. The key pair is created once and kept
- * in the app's private files, so you only have to pair a single time.
- */
 class AdbManager private constructor(context: Context) : AbsAdbConnectionManager() {
 
     private val signingKey: PrivateKey
@@ -56,24 +51,6 @@ class AdbManager private constructor(context: Context) : AbsAdbConnectionManager
                 instance ?: AdbManager(context.applicationContext).also { instance = it }
             }
 
-        /** Throws away the current connection object (used after a time-out). */
-        fun reset() {
-            val old: AdbManager?
-            synchronized(this) {
-                old = instance
-                instance = null
-            }
-            if (old != null) {
-                Thread {
-                    try {
-                        old.close()
-                    } catch (e: Exception) {
-                        // Nothing to do.
-                    }
-                }.start()
-            }
-        }
-
         private fun loadOrCreateKeys(context: Context): Pair<PrivateKey, Certificate> {
             val keyFile = File(context.filesDir, "adb_key.pk8")
             val certFile = File(context.filesDir, "adb_cert.der")
@@ -86,7 +63,7 @@ class AdbManager private constructor(context: Context) : AbsAdbConnectionManager
                         .generateCertificate(ByteArrayInputStream(certFile.readBytes()))
                     return Pair(key, cert)
                 } catch (e: Exception) {
-                    // Fall through and make a fresh key pair.
+                    // make a fresh key pair below
                 }
             }
 
@@ -114,133 +91,90 @@ class AdbManager private constructor(context: Context) : AbsAdbConnectionManager
     }
 }
 
-/**
- * Small wrapper the rest of the app uses. Every call blocks, so call it off the main thread.
- * Every step has a time limit so it can never hang.
- */
+/** Every call blocks (with a time limit), so call it off the main thread. */
 class AdbController(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("adb", Context.MODE_PRIVATE)
 
-    var autoConnectEnabled: Boolean
-        get() = prefs.getBoolean("auto_connect", true)
-        set(value) {
-            prefs.edit().putBoolean("auto_connect", value).apply()
-        }
-
     private fun manager(): AdbManager = AdbManager.get(context)
 
-    /** Runs a blocking call on its own thread and gives up after [timeoutMs]. */
-    private fun <T> runWithTimeout(timeoutMs: Long, what: String, block: () -> T): T {
-        val task = FutureTask<T>(Callable { block() })
-        val thread = Thread(task, "adb-worker")
-        thread.isDaemon = true
-        thread.start()
+    private fun <T> limited(ms: Long, block: () -> T): T {
+        val task = FutureTask(Callable { block() })
+        Thread(task, "adb-op").apply { isDaemon = true; start() }
         try {
-            return task.get(timeoutMs, TimeUnit.MILLISECONDS)
+            return task.get(ms, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
             task.cancel(true)
-            AdbManager.reset()
-            throw IllegalStateException("$what took too long and was stopped.")
+            runCatching { manager().disconnect() }
+            throw IllegalStateException("Timed out. Is Wireless debugging on?")
         } catch (e: ExecutionException) {
-            throw e.cause ?: e
+            throw (e.cause ?: e)
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun wifiAddress(): String? = runCatching {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val props = cm.getLinkProperties(cm.activeNetwork)
-        props?.linkAddresses
-            ?.map { it.address }
-            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-            ?.hostAddress
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val ip = wm.connectionInfo.ipAddress
+        if (ip == 0) null
+        else "${ip and 255}.${(ip shr 8) and 255}.${(ip shr 16) and 255}.${(ip shr 24) and 255}"
     }.getOrNull()
 
-    private fun hostsToTry(host: String): List<String> {
-        val wifi = wifiAddress()
-        return if (wifi != null && wifi != host) listOf(host, wifi) else listOf(host)
+    private fun hostsToTry(host: String): List<String> =
+        listOfNotNull(host, wifiAddress(), "127.0.0.1").distinct()
+
+    fun autoConnectEnabled(): Boolean = prefs.getBoolean("auto_connect", true)
+
+    fun setAutoConnectEnabled(on: Boolean) {
+        prefs.edit().putBoolean("auto_connect", on).apply()
     }
 
-    fun pair(host: String, port: Int, code: String): Result<Unit> {
-        var last: Throwable = IllegalStateException("Pairing failed.")
+    fun pair(host: String, port: Int, code: String): Result<Unit> = runCatching {
+        var ok = false
         for (h in hostsToTry(host)) {
-            val r = runCatching {
-                runWithTimeout(15_000L, "Pairing") {
-                    val ok = manager().pair(h, port, code)
-                    if (!ok) {
-                        error("Pairing was refused. Check the port and code, and keep the pairing window open.")
-                    }
-                    Unit
+            ok = runCatching { limited(15_000) { manager().pair(h, port, code) } }.getOrDefault(false)
+            if (ok) break
+        }
+        if (!ok) error("Pairing was refused. Check the port and code, and keep the pairing window open.")
+    }
+
+    /** port == null: try the saved port, then find it automatically. */
+    fun connect(host: String, port: Int?): Result<Unit> = runCatching {
+        val m = manager()
+        if (m.isConnected()) return@runCatching
+        var ok = false
+        if (port != null) {
+            for (h in hostsToTry(host)) {
+                ok = runCatching { limited(8_000) { m.connect(h, port) } }.getOrDefault(false)
+                if (ok) {
+                    prefs.edit().putString("last_host", h).putInt("last_port", port).apply()
+                    break
                 }
             }
-            if (r.isSuccess) return r
-            last = r.exceptionOrNull() ?: last
-        }
-        return Result.failure(last)
-    }
-
-    /** Connects to a known port. Remembers it when it works. */
-    fun connectManual(host: String, port: Int, timeoutMs: Long): Result<Unit> {
-        var last: Throwable = IllegalStateException("Couldn't connect.")
-        for (h in hostsToTry(host)) {
-            val r = runCatching {
-                runWithTimeout(timeoutMs, "Connecting") {
-                    val m = manager()
-                    val ok = m.connect(h, port)
-                    if (!ok && !m.isConnected()) {
-                        error("Couldn't connect to $h:$port. Check the port and that Wireless debugging is on.")
-                    }
-                    Unit
-                }
+        } else {
+            val savedPort = prefs.getInt("last_port", 0)
+            val savedHost = prefs.getString("last_host", null)
+            if (savedPort > 0 && savedHost != null) {
+                ok = runCatching { limited(5_000) { m.connect(savedHost, savedPort) } }.getOrDefault(false)
             }
-            if (r.isSuccess) {
-                prefs.edit().putString("last_host", h).putInt("last_port", port).apply()
-                return r
+            if (!ok) {
+                ok = runCatching { limited(14_000) { m.autoConnect(context, 9_000L) } }.getOrDefault(false)
             }
-            last = r.exceptionOrNull() ?: last
         }
-        return Result.failure(last)
-    }
-
-    /** Finds Wireless debugging by itself, using the network. */
-    fun connectFind(): Result<Unit> = runCatching {
-        runWithTimeout(14_000L, "Looking for Wireless debugging") {
-            val m = manager()
-            val ok = m.autoConnect(context, 9_000L)
-            if (!ok && !m.isConnected()) {
-                error("Wireless debugging wasn't found. Turn it on and make sure you've paired once.")
-            }
-            Unit
+        if (!ok && !m.isConnected()) {
+            error("Couldn't connect. Check that Wireless debugging is on, then try again.")
         }
     }
 
-    /** Last working port first, then search. Does nothing if already connected. */
-    fun autoConnect(): Result<Unit> {
-        if (isConnected()) return Result.success(Unit)
-        val port = prefs.getInt("last_port", 0)
-        if (port > 0) {
-            val host = prefs.getString("last_host", "127.0.0.1") ?: "127.0.0.1"
-            val r = connectManual(host, port, 5_000L)
-            if (r.isSuccess) return r
-        }
-        return connectFind()
-    }
-
-    fun isConnected(): Boolean = runCatching {
-        runWithTimeout(3_000L, "Checking the connection") { manager().isConnected() }
-    }.getOrDefault(false)
+    fun isConnected(): Boolean =
+        runCatching { limited(3_000) { manager().isConnected() } }.getOrDefault(false)
 
     fun disconnect() {
-        runCatching {
-            runWithTimeout(3_000L, "Disconnecting") {
-                manager().disconnect()
-                Unit
-            }
-        }
+        runCatching { manager().disconnect() }
     }
 
     fun shell(command: String): Result<String> = runCatching {
-        runWithTimeout(8_000L, "The command") {
+        limited(8_000) {
             val stream = manager().openStream("shell:$command")
             stream.openInputStream().bufferedReader().use { it.readText() }
         }
