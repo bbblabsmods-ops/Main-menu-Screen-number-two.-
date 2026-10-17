@@ -5,6 +5,9 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -30,22 +33,43 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     private val repo = AppRepository(application)
     private val adbController = AdbController(application)
-
-    // Only one Wireless debugging job runs at a time.
     private val adbMutex = Mutex()
+
+    val art = ArtRepository(application)
 
     private val _apps = MutableStateFlow<List<AppEntry>>(emptyList())
     val apps: StateFlow<List<AppEntry>> = _apps
 
+    private val _hiddenCount = MutableStateFlow(0)
+    val hiddenCount: StateFlow<Int> = _hiddenCount
+
     private val _refreshResult = MutableStateFlow<RefreshResult?>(null)
     val refreshResult: StateFlow<RefreshResult?> = _refreshResult
 
-    private val _adb = MutableStateFlow(AdbUiState(autoConnect = adbController.autoConnectEnabled))
+    private val _adb = MutableStateFlow(AdbUiState(autoConnect = adbController.autoConnectEnabled()))
     val adb: StateFlow<AdbUiState> = _adb
 
     fun refresh() {
         viewModelScope.launch {
-            _apps.value = withContext(Dispatchers.IO) { repo.load() }
+            val list = withContext(Dispatchers.IO) { repo.load() }
+            _apps.value = list
+            _hiddenCount.value = repo.hiddenCount()
+
+            // Fill in real names for apps whose own label is just a package/class name.
+            val junk = list.filter { it.labelJunk }
+            if (junk.isNotEmpty()) {
+                val names = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        junk.map { a -> async { art.name(a.packageName)?.let { a.packageName to it } } }
+                            .awaitAll().filterNotNull().toMap()
+                    }
+                }
+                if (names.isNotEmpty()) {
+                    _apps.value = _apps.value.map { a ->
+                        names[a.packageName]?.let { a.copy(label = it, labelJunk = false) } ?: a
+                    }
+                }
+            }
         }
     }
 
@@ -58,34 +82,31 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         refresh()
     }
 
-    /**
-     * Uses the Wireless debugging connection (reconnecting first if needed). Without one we
-     * fall back to trying directly, which Quest usually refuses, and the screen shows the
-     * command to copy.
-     */
+    fun hide(app: AppEntry) {
+        repo.hide(app)
+        refresh()
+    }
+
+    fun unhideAll() {
+        repo.unhideAll()
+        refresh()
+    }
+
     fun setRefreshRate(hz: Int) {
         viewModelScope.launch {
             val supported = hz in listOf(60, 72, 90, 120)
-            adbMutex.withLock {
-                val outcome = withContext(Dispatchers.IO) {
-                    var connected = adbController.isConnected()
-                    if (!connected && adbController.autoConnectEnabled) {
-                        connected = adbController.autoConnect().isSuccess
-                    }
-                    val ok = if (connected) {
+            val ok = withContext(Dispatchers.IO) {
+                adbMutex.withLock {
+                    if (adbController.isConnected() ||
+                        (adbController.autoConnectEnabled() && adbController.connect("127.0.0.1", null).isSuccess)
+                    ) {
                         adbController.shell("setprop debug.oculus.refreshRate $hz").isSuccess && supported
                     } else {
                         repo.setRefreshRate(hz)
                     }
-                    Pair(connected, ok)
                 }
-                _adb.value = if (outcome.first) {
-                    _adb.value.copy(connected = true, message = "Connected")
-                } else {
-                    _adb.value.copy(connected = false)
-                }
-                _refreshResult.value = RefreshResult(hz, outcome.second)
             }
+            _refreshResult.value = RefreshResult(hz, ok)
         }
     }
 
@@ -114,13 +135,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setAutoConnect(on: Boolean) {
-        adbController.autoConnectEnabled = on
+        adbController.setAutoConnectEnabled(on)
         _adb.value = _adb.value.copy(autoConnect = on)
-        if (on) autoConnectQuietly()
     }
 
     fun refreshAdbState() {
-        if (_adb.value.busy) return
         viewModelScope.launch {
             val connected = withContext(Dispatchers.IO) { adbController.isConnected() }
             val old = _adb.value
@@ -132,26 +151,18 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** Runs when the launcher opens. Quiet: it only updates the status line. */
+    /** Runs when the launcher opens. Silent if it can't connect. */
     fun autoConnectQuietly() {
-        if (!adbController.autoConnectEnabled) return
-        val s = _adb.value
-        if (s.connected || s.busy) return
+        if (!adbController.autoConnectEnabled()) return
         viewModelScope.launch {
-            adbMutex.withLock {
-                if (_adb.value.connected) return@withLock
-                _adb.value = _adb.value.copy(busy = true, message = "Looking for Wireless debugging…")
-                val result = withContext(Dispatchers.IO) { adbController.autoConnect() }
-                _adb.value = result.fold(
-                    onSuccess = { _adb.value.copy(connected = true, busy = false, message = "Connected") },
-                    onFailure = {
-                        _adb.value.copy(
-                            connected = false,
-                            busy = false,
-                            message = "Not connected. Auto-connect: ${it.friendly()}",
-                        )
-                    },
-                )
+            if (!adbMutex.tryLock()) return@launch
+            try {
+                val ok = withContext(Dispatchers.IO) {
+                    adbController.isConnected() || adbController.connect("127.0.0.1", null).isSuccess
+                }
+                if (ok) _adb.value = _adb.value.copy(connected = true, message = "Connected")
+            } finally {
+                adbMutex.unlock()
             }
         }
     }
@@ -160,7 +171,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (host.isEmpty()) return adbNote("Type the IP address (127.0.0.1 works on this headset).")
         if (port == null) return adbNote("Type the pairing port (numbers only).")
         if (code.length < 4) return adbNote("Type the 6-digit pairing code.")
-        if (_adb.value.busy) return adbNote("Still working. Wait a few seconds, then try again.")
         viewModelScope.launch {
             adbMutex.withLock {
                 _adb.value = _adb.value.copy(busy = true, message = "Pairing…")
@@ -178,22 +188,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun adbConnect(host: String, port: Int?) {
         if (host.isEmpty()) return adbNote("Type the IP address (127.0.0.1 works on this headset).")
-        if (_adb.value.busy) return adbNote("Still working. Wait a few seconds, then try again.")
         viewModelScope.launch {
             adbMutex.withLock {
                 _adb.value = _adb.value.copy(busy = true, message = "Connecting…")
-                val result = withContext(Dispatchers.IO) {
-                    if (port == null) adbController.autoConnect()
-                    else adbController.connectManual(host, port, 10_000L)
-                }
+                val result = withContext(Dispatchers.IO) { adbController.connect(host, port) }
                 _adb.value = result.fold(
                     onSuccess = { _adb.value.copy(connected = true, busy = false, message = "Connected") },
                     onFailure = {
-                        _adb.value.copy(
-                            connected = false,
-                            busy = false,
-                            message = "Connect failed: ${it.friendly()}",
-                        )
+                        _adb.value.copy(connected = false, busy = false, message = "Connect failed: ${it.friendly()}")
                     },
                 )
             }
@@ -202,10 +204,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun adbDisconnect() {
         viewModelScope.launch {
-            adbMutex.withLock {
-                withContext(Dispatchers.IO) { adbController.disconnect() }
-                _adb.value = _adb.value.copy(connected = false, busy = false, message = "Disconnected")
-            }
+            withContext(Dispatchers.IO) { adbController.disconnect() }
+            _adb.value = _adb.value.copy(connected = false, busy = false, message = "Disconnected")
         }
     }
 
