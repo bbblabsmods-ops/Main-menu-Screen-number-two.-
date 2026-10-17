@@ -1,4 +1,5 @@
 @file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.example.questlauncher
 
 import android.content.Context
@@ -27,14 +28,16 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
@@ -43,6 +46,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,6 +63,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -70,108 +75,89 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val BgTop = Color(0xFF151A2E)
-private val BgBottom = Color(0xFF07090F)
-private val Accent = Color(0xFF7C5CFF)
+private val Bg = Color(0xFF0E131B)
 private val Glass = Color(0x14FFFFFF)
 private val GlassBorder = Color(0x22FFFFFF)
+private val Accent = Color(0xFF7C5CFF)
 private val Dim = Color(0xFF8A94A3)
 
-private enum class Page(val title: String) {
-    GAMES("Games"),
-    APPS("Apps"),
-    TOOLS("Tools"),
-}
-
-private fun iconFor(page: Page): ImageVector = when (page) {
-    Page.GAMES -> Icons.Default.Star
-    Page.APPS -> Icons.Default.Apps
-    Page.TOOLS -> Icons.Default.Build
+private enum class Page(val title: String, val icon: ImageVector) {
+    GAMES("Games", Icons.Default.SportsEsports),
+    APPS("Apps", Icons.Default.Apps),
+    TOOLS("Tools", Icons.Default.Build),
 }
 
 @Composable
 fun LauncherScreen(viewModel: LauncherViewModel) {
     val apps by viewModel.apps.collectAsStateWithLifecycle()
+    val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
 
     var page by remember { mutableStateOf(Page.GAMES) }
     var sort by remember { mutableStateOf(SortMode.NAME) }
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    var selectedHz by remember { mutableStateOf<Int?>(null) }
+    var sortMenu by remember { mutableStateOf(false) }
 
-    val listTab: LauncherTab? = when (page) {
-        Page.GAMES -> LauncherTab.GAMES
-        Page.APPS -> LauncherTab.APPS
-        Page.TOOLS -> null
-    }
+    val tab = if (page == Page.APPS) LauncherTab.APPS else LauncherTab.GAMES
 
     val visible = remember(apps, page, sort, query) {
-        val t = listTab
-        if (t == null) {
-            emptyList<AppEntry>()
-        } else {
-            apps.asSequence()
-                .filter { it.tab == t }
-                .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
-                .let {
-                    when (sort) {
-                        SortMode.NAME -> it.sortedBy { a -> a.label.lowercase() }
-                        SortMode.RECENT -> it.sortedByDescending { a -> a.installTime }
-                    }
+        apps.asSequence()
+            .filter { it.tab == tab }
+            .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
+            .let {
+                when (sort) {
+                    SortMode.NAME -> it.sortedBy { a -> a.label.lowercase() }
+                    SortMode.RECENT -> it.sortedByDescending { a -> a.installTime }
                 }
-                .toList()
-        }
+            }
+            .toList()
     }
 
-    Row(
-        Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
-            .padding(20.dp)
-    ) {
-        Rail(
-            page = page,
-            onSelect = {
-                page = it
-                query = ""
-                searching = false
-            },
-        )
-        Spacer(Modifier.width(22.dp))
+    Row(Modifier.fillMaxSize().background(Bg)) {
+        Rail(page) { page = it }
 
-        Column(Modifier.weight(1f).fillMaxHeight()) {
-
-            // Header
+        Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 24.dp, vertical = 18.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(page.title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                if (listTab != null) {
-                    Spacer(Modifier.width(12.dp))
-                    Text("${visible.size}", color = Dim, fontSize = 16.sp)
-                }
-                Spacer(Modifier.weight(1f))
-                if (listTab != null) {
-                    Pill(sort.label) {
-                        sort = if (sort == SortMode.NAME) SortMode.RECENT else SortMode.NAME
+                Column(Modifier.weight(1f)) {
+                    Text(page.title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                    if (page != Page.TOOLS) {
+                        Text("${visible.size} items", color = Dim, fontSize = 13.sp)
                     }
-                    Spacer(Modifier.width(4.dp))
+                }
+                if (page != Page.TOOLS) {
+                    Box {
+                        IconButton(onClick = { sortMenu = true }) {
+                            Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Color.White)
+                        }
+                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                            SortMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode.label) },
+                                    onClick = { sort = mode; sortMenu = false },
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = {
                         searching = !searching
                         if (!searching) query = ""
                     }) {
                         Icon(Icons.Default.Search, "Search", tint = Color.White)
                     }
-                    Spacer(Modifier.width(8.dp))
                 }
+                Spacer(Modifier.width(12.dp))
                 StatusInfo()
             }
 
-            if (searching && listTab != null) {
+            if (searching && page != Page.TOOLS) {
                 val focus = remember { FocusRequester() }
                 LaunchedEffect(Unit) { focus.requestFocus() }
                 OutlinedTextField(
@@ -179,36 +165,32 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                     onValueChange = { query = it },
                     singleLine = true,
                     placeholder = { Text("Search ${page.title.lowercase()}") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = Color.White,
+                        focusedBorderColor = Accent,
+                        unfocusedBorderColor = GlassBorder,
+                    ),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp).focusRequester(focus),
                 )
             }
 
-            Spacer(Modifier.size(16.dp))
+            Spacer(Modifier.size(14.dp))
 
             if (page == Page.TOOLS) {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    ToolsPage(
-                        viewModel = viewModel,
-                        selectedHz = selectedHz,
-                        onPickHz = { hz ->
-                            selectedHz = hz
-                            viewModel.setRefreshRate(hz)
-                        },
-                    )
-                }
+                ToolsPage(viewModel, hiddenCount)
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(if (page == Page.GAMES) 190.dp else 120.dp),
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
+                    modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     items(visible, key = { it.packageName }) { app ->
                         AppCell(
                             app = app,
-                            onLaunch = { viewModel.launch(app) },
-                            onInfo = { viewModel.openAppInfo(app) },
-                            onMove = { viewModel.moveTo(app, it) },
+                            viewModel = viewModel,
                         )
                     }
                 }
@@ -216,38 +198,24 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
         }
     }
 
-    // Result of a refresh-rate change
     refreshResult?.let { r ->
         val clipboard = LocalClipboardManager.current
-        val cmd = "setprop debug.oculus.refreshRate ${r.hz}"
-        val supported = r.hz in listOf(60, 72, 90, 120)
+        val command = "adb shell setprop debug.oculus.refreshRate ${r.hz}"
         AlertDialog(
             onDismissRequest = { viewModel.dismissRefreshResult() },
-            title = {
-                Text(if (r.applied) "Refresh rate set to ${r.hz} Hz" else "Couldn't set ${r.hz} Hz directly")
-            },
+            title = { Text(if (r.applied) "${r.hz} Hz applied" else "Couldn't set ${r.hz} Hz") },
             text = {
                 Text(
-                    when {
-                        r.applied -> "The new rate should apply now."
-                        !supported -> "${r.hz} Hz isn't a Quest refresh rate, so Quest will most likely ignore it. " +
-                            "Quest supports 60, 72, 90 and 120 Hz."
-                        else -> "Quest only lets apps change this through ADB. Run this command in an ADB shell " +
-                            "(for example in StripesADB):\n\n$cmd"
-                    }
+                    if (r.applied) "Refresh rate was set to ${r.hz} Hz."
+                    else if (r.hz !in listOf(60, 72, 90, 120))
+                        "Quest only supports 60, 72, 90 and 120 Hz, so ${r.hz} Hz is ignored."
+                    else "Connect Wireless debugging in Tools first, or run this from a computer:\n\n$command"
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (!r.applied) clipboard.setText(AnnotatedString(cmd))
-                    viewModel.dismissRefreshResult()
-                }) {
-                    Text(if (r.applied) "OK" else "Copy command")
-                }
-            },
+            confirmButton = { TextButton(onClick = { viewModel.dismissRefreshResult() }) { Text("OK") } },
             dismissButton = {
-                if (!r.applied) {
-                    TextButton(onClick = { viewModel.dismissRefreshResult() }) { Text("Close") }
+                if (!r.applied) TextButton(onClick = { clipboard.setText(AnnotatedString(command)) }) {
+                    Text("Copy command")
                 }
             },
         )
@@ -255,56 +223,33 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
 }
 
 @Composable
-private fun Rail(page: Page, onSelect: (Page) -> Unit) {
-    val shape = RoundedCornerShape(32.dp)
+private fun Rail(selected: Page, onSelect: (Page) -> Unit) {
     Column(
         Modifier
             .fillMaxHeight()
-            .width(104.dp)
-            .clip(shape)
+            .width(96.dp)
             .background(Glass)
-            .border(1.dp, GlassBorder, shape)
             .padding(vertical = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Page.entries.forEach { p ->
-            val selected = p == page
+            val sel = p == selected
             Column(
                 Modifier
-                    .width(84.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(if (selected) Accent else Color.Transparent)
+                    .width(76.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (sel) Accent else Color.Transparent)
                     .clickable { onSelect(p) }
                     .padding(vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(
-                    iconFor(p), p.title,
-                    tint = if (selected) Color.White else Dim,
-                    modifier = Modifier.size(26.dp),
-                )
+                Icon(p.icon, p.title, tint = if (sel) Color.White else Dim, modifier = Modifier.size(26.dp))
                 Spacer(Modifier.size(4.dp))
-                Text(p.title, color = if (selected) Color.White else Dim, fontSize = 12.sp)
+                Text(p.title, color = if (sel) Color.White else Dim, fontSize = 12.sp)
             }
         }
     }
-}
-
-@Composable
-private fun Pill(text: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(50)
-    Text(
-        text,
-        color = Color.White,
-        fontSize = 14.sp,
-        modifier = Modifier
-            .clip(shape)
-            .background(Glass)
-            .border(1.dp, GlassBorder, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
-    )
 }
 
 @Composable
@@ -340,184 +285,70 @@ private fun StatusInfo() {
         )
         Spacer(Modifier.width(6.dp))
         Icon(Icons.Default.BatteryChargingFull, null, tint = Color.White, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(2.dp))
         Text("$battery%", color = Dim, fontSize = 13.sp)
     }
 }
 
 @Composable
-private fun ToolsPage(
-    viewModel: LauncherViewModel,
-    selectedHz: Int?,
-    onPickHz: (Int) -> Unit,
-) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        ToolCard(
-            "Refresh rate",
-            "Quest modes are 60, 72, 90 and 120 Hz. 200 Hz isn't a Quest mode, so it will probably be ignored.",
-        ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                listOf(60, 72, 90, 120, 200).forEach { hz ->
-                    HzChip(Modifier.weight(1f), hz, hz == selectedHz) { onPickHz(hz) }
-                }
-            }
-        }
-
-        ToolCard("Shortcuts", null) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionButton(Modifier.weight(1f), "Android Settings") { viewModel.openAndroidSettings() }
-                ActionButton(Modifier.weight(1f), "YouTube VR") { viewModel.openYouTubeVr() }
-                ActionButton(Modifier.weight(1f), "Developer options") { viewModel.openDeveloperSettings() }
-            }
-        }
-
-        AdbPanel(viewModel)
-    }
-}
-
-@Composable
-private fun ToolCard(title: String, note: String?, content: @Composable () -> Unit) {
-    val shape = RoundedCornerShape(24.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(Glass)
-            .border(1.dp, GlassBorder, shape)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-        if (note != null) {
-            Text(note, color = Dim, fontSize = 13.sp)
-        }
-        content()
-    }
-}
-
-@Composable
-private fun HzChip(modifier: Modifier, hz: Int, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(16.dp)
-    Box(
-        modifier
-            .clip(shape)
-            .background(if (selected) Accent else Color(0x1AFFFFFF))
-            .border(1.dp, if (selected) Accent else GlassBorder, shape)
-            .clickable(onClick = onClick)
-            .padding(vertical = 14.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text("$hz Hz", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun ActionButton(modifier: Modifier, text: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(16.dp)
-    Box(
-        modifier
-            .clip(shape)
-            .background(Color(0x1AFFFFFF))
-            .border(1.dp, GlassBorder, shape)
-            .clickable(onClick = onClick)
-            .padding(vertical = 14.dp, horizontal = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
-    }
-}
-
-@Composable
-private fun AppCell(
-    app: AppEntry,
-    onLaunch: () -> Unit,
-    onInfo: () -> Unit,
-    onMove: (LauncherTab) -> Unit,
-) {
+private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
     var menu by remember { mutableStateOf(false) }
+    val wide = app.tab.wide
+    val pkg = app.packageName
+
+    val banner by produceState<ImageBitmap?>(null, pkg) {
+        value = if (wide) withContext(Dispatchers.IO) { viewModel.art.banner(pkg) } else null
+    }
+    val onlineIcon by produceState<ImageBitmap?>(null, pkg, app.iconBlank) {
+        value = if (app.iconBlank) withContext(Dispatchers.IO) { viewModel.art.icon(pkg) } else null
+    }
+    val icon = onlineIcon ?: app.icon
+    val hue = (pkg.hashCode() and 0x7fffffff) % 360
 
     Box {
-        if (app.tab.wide) {
-            val shape = RoundedCornerShape(24.dp)
+        if (wide) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1.3f)
-                    .clip(shape)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(18.dp))
                     .background(
-                        Brush.verticalGradient(
-                            listOf(Color(app.accent).copy(alpha = 0.65f), Color(0xFF0E1220))
+                        Brush.linearGradient(
+                            listOf(Color.hsv(hue.toFloat(), 0.45f, 0.55f), Color.hsv(((hue + 40) % 360).toFloat(), 0.5f, 0.35f))
                         )
                     )
-                    .border(1.dp, GlassBorder, shape)
-                    .combinedClickable(onClick = onLaunch, onLongClick = { menu = true }),
+                    .border(1.dp, GlassBorder, RoundedCornerShape(18.dp))
+                    .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true }),
+                contentAlignment = Alignment.Center,
             ) {
-                if (app.banner != null) {
-                    Image(
-                        app.banner, app.label,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
+                val b = banner
+                if (b != null) {
+                    Image(b, app.label, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 } else {
-                    Image(
-                        app.icon, app.label,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(bottom = 22.dp)
-                            .size(78.dp)
-                            .clip(RoundedCornerShape(20.dp)),
-                    )
-                }
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000)))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Image(icon, app.label, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)))
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            app.label,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp),
                         )
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                ) {
-                    Text(
-                        app.label,
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    }
                 }
             }
         } else {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
-                    .combinedClickable(onClick = onLaunch, onLongClick = { menu = true })
-                    .padding(8.dp),
+                    .clip(RoundedCornerShape(18.dp))
+                    .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true })
+                    .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                val tile = RoundedCornerShape(24.dp)
-                Box(
-                    Modifier
-                        .size(80.dp)
-                        .clip(tile)
-                        .background(Glass)
-                        .border(1.dp, GlassBorder, tile),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Image(
-                        app.icon, app.label,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(6.dp)
-                            .clip(RoundedCornerShape(18.dp)),
-                    )
-                }
+                Image(icon, app.label, modifier = Modifier.size(76.dp).clip(RoundedCornerShape(20.dp)))
                 Spacer(Modifier.size(6.dp))
                 Text(
                     app.label,
@@ -534,13 +365,68 @@ private fun AppCell(
             val target = if (app.tab == LauncherTab.GAMES) LauncherTab.APPS else LauncherTab.GAMES
             DropdownMenuItem(
                 text = { Text("Move to ${target.title}") },
-                onClick = { menu = false; onMove(target) },
+                onClick = { menu = false; viewModel.moveTo(app, target) },
+            )
+            DropdownMenuItem(
+                text = { Text("Hide") },
+                onClick = { menu = false; viewModel.hide(app) },
             )
             DropdownMenuItem(
                 text = { Text("App info") },
-                onClick = { menu = false; onInfo() },
+                onClick = { menu = false; viewModel.openAppInfo(app) },
             )
         }
+    }
+}
+
+@Composable
+private fun ToolsPage(viewModel: LauncherViewModel, hiddenCount: Int) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        SectionTitle("Refresh rate")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(60, 72, 90, 120, 200).forEach { hz ->
+                ToolChip("$hz Hz") { viewModel.setRefreshRate(hz) }
+            }
+        }
+
+        SectionTitle("Shortcuts")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ToolChip("Android Settings") { viewModel.openAndroidSettings() }
+            ToolChip("YouTube VR") { viewModel.openYouTubeVr() }
+            ToolChip("Developer options") { viewModel.openDeveloperSettings() }
+        }
+
+        if (hiddenCount > 0) {
+            SectionTitle("Hidden apps")
+            Row { ToolChip("Show $hiddenCount hidden apps") { viewModel.unhideAll() } }
+        }
+
+        AdbPanel(viewModel)
+        Spacer(Modifier.size(24.dp))
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+}
+
+@Composable
+private fun ToolChip(text: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        Modifier
+            .clip(shape)
+            .background(Glass)
+            .border(1.dp, GlassBorder, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color.White, fontSize = 15.sp)
     }
 }
 
