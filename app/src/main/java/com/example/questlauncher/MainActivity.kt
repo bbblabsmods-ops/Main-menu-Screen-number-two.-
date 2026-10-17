@@ -14,13 +14,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             LauncherScreen(viewModel)
         }
-        // Reconnects to Wireless debugging by itself if you've paired before.
-        viewModel.autoConnectQuietly()
     }
 
     override fun onResume() {
         super.onResume()
         // Picks up installs, uninstalls and updates made while we were away.
         viewModel.refresh()
+        // Reconnects to Wireless debugging by itself if you've paired before.
+        viewModel.autoConnectQuietly()
     }
 }
