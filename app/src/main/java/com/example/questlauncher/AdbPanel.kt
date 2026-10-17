@@ -76,11 +76,11 @@ fun AdbPanel(viewModel: LauncherViewModel) {
         Text(state.message, color = Color.White, fontSize = 14.sp)
 
         Text(
-            "1. Open Developer options (button above) and turn on Wireless debugging.\n" +
+            "First time only:\n" +
+                "1. Open Developer options (button above) and turn on Wireless debugging.\n" +
                 "2. Tap \"Pair device with pairing code\" and keep that window open.\n" +
                 "3. Type the pairing port and the 6-digit code below, then tap Pair.\n" +
-                "4. Tap Connect. Leave the connect port empty to find it automatically, " +
-                "or type the port shown on the main Wireless debugging screen.",
+                "4. Tap Connect. After that, auto-connect reconnects every time you open the launcher.",
             color = PanelDim,
             fontSize = 13.sp,
         )
@@ -117,6 +117,17 @@ fun AdbPanel(viewModel: LauncherViewModel) {
                 PanelButton("Disconnect", !state.busy, Modifier.weight(1f), primary = false) {
                     viewModel.adbDisconnect()
                 }
+            }
+        }
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PanelButton(
+                "Auto-connect: " + if (state.autoConnect) "On" else "Off",
+                true,
+                Modifier.weight(1f),
+                primary = state.autoConnect,
+            ) {
+                viewModel.setAutoConnect(!state.autoConnect)
             }
         }
     }
