@@ -48,8 +48,9 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         mutableStateListOf(
             ChatMessage(
                 false,
-                "Hi! I'm the BBB assistant. Try: \"open Beat Saber\", \"what time is it\", " +
-                    "\"set 90 Hz\" or \"what is a black hole\"."
+                "Hi! Say \"Hey BBB\" and then ask me something. Try: \"Hey BBB, open Beat Saber\", " +
+                    "\"Hey BBB, what is six plus six\", \"Hey BBB, what time is it\" or " +
+                    "\"Hey BBB, tell me a story\"."
             )
         )
     }
@@ -58,6 +59,7 @@ fun AssistantPage(viewModel: LauncherViewModel) {
     var showSettings by remember { mutableStateOf(false) }
     var keyText by remember { mutableStateOf(assistant.apiKey()) }
     var hasKey by remember { mutableStateOf(assistant.apiKey().isNotEmpty()) }
+    var wake by remember { mutableStateOf(assistant.wakeWord()) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
@@ -92,7 +94,8 @@ fun AssistantPage(viewModel: LauncherViewModel) {
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (hasKey) "AI: Claude is on" else "AI: basic mode (add a key in AI settings)",
+                (if (hasKey) "AI: Claude is on" else "AI: basic mode") +
+                    (if (wake) "  ·  say \"Hey BBB\" first" else "  ·  wake word off"),
                 color = ChatDim, fontSize = 13.sp, modifier = Modifier.weight(1f),
             )
             Box(
@@ -112,8 +115,9 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "For full AI answers, get an API key at console.anthropic.com and paste it here. " +
-                        "It is saved only on this headset. Each question costs a small amount.",
+                    "For full AI answers and new stories every time, get an API key at " +
+                        "console.anthropic.com and paste it here. It is saved only on this headset. " +
+                        "Each question costs a small amount.",
                     color = ChatDim, fontSize = 13.sp,
                 )
                 OutlinedTextField(
@@ -135,6 +139,10 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                         keyText = ""
                         assistant.saveApiKey("")
                         hasKey = false
+                    }
+                    ChatButton(if (wake) "Wake word: On" else "Wake word: Off", wake) {
+                        wake = !wake
+                        assistant.setWakeWord(wake)
                     }
                 }
             }
@@ -159,7 +167,7 @@ fun AssistantPage(viewModel: LauncherViewModel) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                placeholder = { Text("Ask me or tell me to do something…") },
+                placeholder = { Text("Say \"Hey BBB, …\"") },
                 singleLine = true,
                 shape = RoundedCornerShape(22.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
