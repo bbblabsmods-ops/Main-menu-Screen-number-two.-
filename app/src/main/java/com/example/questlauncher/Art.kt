@@ -1,3 +1,4 @@
+
 package com.example.questlauncher
 
 import android.content.Context
@@ -19,8 +20,8 @@ data class StoreMeta(
     val hero: String?,
 )
 
-/** bytes != null: got the file. definitive: the server really said "no such file". */
-private class Download(val bytes: ByteArray?, val definitive: Boolean)
+/** bytes is the file if we got it. definitive is true when the server really said "no such file". */
+class ArtDownload(val bytes: ByteArray?, val definitive: Boolean)
 
 /**
  * Finds real icons, banners and names for apps by package name, using public community
@@ -34,7 +35,7 @@ class ArtRepository(context: Context) {
     private val mem = LruCache<String, ImageBitmap>(120)
     private val gate = Semaphore(4)
 
-    private val missingForMs = 86_400_000L // remember a real "not found" for one day
+    private val missingForMs = 86_400_000L
 
     private val exts = listOf("png", "jpg", "webp")
     private val communityIcons = listOf(
@@ -48,26 +49,17 @@ class ArtRepository(context: Context) {
     private val metaBase = "https://raw.githubusercontent.com/threethan/MetaMetadata/main/data/common/"
 
     fun banner(pkg: String): ImageBitmap? {
-        val extra = meta(pkg).let { listOfNotNull(it?.landscape, it?.hero) }
-        return image("banner", pkg, communityBanners.flatMap { b -> exts.map { "$b$pkg.$it" } } + extra)
+        val m = meta(pkg)
+        val extra = listOfNotNull(m?.landscape, m?.hero)
+        val urls = communityBanners.flatMap { b -> exts.map { e -> "$b$pkg.$e" } } + extra
+        return image("banner", pkg, urls)
     }
 
     fun icon(pkg: String): ImageBitmap? {
-        val extra = meta(pkg).let { listOfNotNull(it?.square, it?.icon) }
-        return image("icon", pkg, communityIcons.flatMap { b -> exts.map { "$b$pkg.$it" } } + extra)
+        val m = meta(pkg)
+        val extra = listOfNotNull(m?.square, m?.icon)
+        val urls = communityIcons.flatMap { b -> exts.map { e -> "$b$pkg.$e" } } + extra
+        return image("icon", pkg, urls)
     }
 
-    fun name(pkg: String): String? = meta(pkg)?.name?.takeIf { it.isNotBlank() }
-
-    // ---- internals ----
-
-    private fun image(kind: String, pkg: String, urls: List<String>): ImageBitmap? {
-        val key = "$kind-$pkg"
-        mem.get(key)?.let { return it }
-
-        val file = File(dir, "$key.img")
-        val none = File(dir, "$key.none")
-        if (file.exists()) decode(file.readBytes())?.let { mem.put(key, it); return it }
-        if (none.exists() && System.currentTimeMillis() - none.lastModified() < missingForMs) return null
-
-        var allDefinitive = true
+    fun name(pkg: String):
