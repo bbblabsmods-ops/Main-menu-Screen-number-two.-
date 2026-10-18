@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -318,10 +319,28 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
     val pkg = app.packageName
 
     val banner by produceState<ImageBitmap?>(null, pkg) {
-        value = if (wide) withContext(Dispatchers.IO) { viewModel.art.banner(pkg) } else null
+        if (wide) {
+            var tries = 0
+            while (value == null && tries < 4) {
+                value = withContext(Dispatchers.IO) { viewModel.art.banner(pkg) }
+                if (value == null) {
+                    tries++
+                    delay(5000L * tries)
+                }
+            }
+        }
     }
     val onlineIcon by produceState<ImageBitmap?>(null, pkg, app.iconBlank) {
-        value = if (app.iconBlank) withContext(Dispatchers.IO) { viewModel.art.icon(pkg) } else null
+        if (app.iconBlank) {
+            var tries = 0
+            while (value == null && tries < 4) {
+                value = withContext(Dispatchers.IO) { viewModel.art.icon(pkg) }
+                if (value == null) {
+                    tries++
+                    delay(5000L * tries)
+                }
+            }
+        }
     }
     val icon = onlineIcon ?: app.icon
     val hue = (pkg.hashCode() and 0x7fffffff) % 360
@@ -348,7 +367,6 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
             ) {
                 val b = banner
                 if (b != null) {
-                    // With a chosen color the banner sits inside a frame so the color shows.
                     Image(
                         b, app.label,
                         modifier = Modifier
@@ -478,7 +496,7 @@ private fun ColorsPage(apps: List<AppEntry>, tileColors: TileColors) {
 @Composable
 private fun SwatchRow(selected: Color?, onPick: (Color?) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), enabled = false),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(
