@@ -19,6 +19,9 @@ data class StoreMeta(
     val hero: String?,
 )
 
+/** bytes != null: got the file. definitive: the server really said "no such file". */
+private class Download(val bytes: ByteArray?, val definitive: Boolean)
+
 /**
  * Finds real icons, banners and names for apps by package name, using public community
  * image libraries on GitHub, then keeps them on the headset so they only download once.
@@ -26,9 +29,12 @@ data class StoreMeta(
  */
 class ArtRepository(context: Context) {
 
-    private val dir = File(context.cacheDir, "art").apply { mkdirs() }
+    // New folder name on purpose: it drops the wrong "missing" notes saved by the old version.
+    private val dir = File(context.cacheDir, "art2").apply { mkdirs() }
     private val mem = LruCache<String, ImageBitmap>(120)
     private val gate = Semaphore(4)
+
+    private val missingForMs = 86_400_000L // remember a real "not found" for one day
 
     private val exts = listOf("png", "jpg", "webp")
     private val communityIcons = listOf(
@@ -62,67 +68,6 @@ class ArtRepository(context: Context) {
         val file = File(dir, "$key.img")
         val none = File(dir, "$key.none")
         if (file.exists()) decode(file.readBytes())?.let { mem.put(key, it); return it }
-        if (none.exists() && System.currentTimeMillis() - none.lastModified() < 2 * 86_400_000L) return null
+        if (none.exists() && System.currentTimeMillis() - none.lastModified() < missingForMs) return null
 
-        for (url in urls) {
-            val bytes = download(url) ?: continue
-            val bmp = decode(bytes) ?: continue
-            runCatching { file.writeBytes(bytes) }
-            mem.put(key, bmp)
-            return bmp
-        }
-        runCatching { none.writeText("x") }
-        return null
-    }
-
-    private fun meta(pkg: String): StoreMeta? {
-        val file = File(dir, "meta-$pkg.json")
-        val none = File(dir, "meta-$pkg.none")
-        val text = when {
-            file.exists() -> file.readText()
-            none.exists() && System.currentTimeMillis() - none.lastModified() < 2 * 86_400_000L -> return null
-            else -> {
-                val bytes = download("$metaBase$pkg.json")
-                if (bytes == null) {
-                    runCatching { none.writeText("x") }
-                    return null
-                }
-                String(bytes).also { runCatching { file.writeText(it) } }
-            }
-        }
-        return runCatching {
-            val o = JSONObject(text)
-            fun s(k: String) = if (o.has(k) && !o.isNull(k)) o.getString(k).takeIf { it.startsWith("http") } else null
-            StoreMeta(
-                name = if (o.has("name") && !o.isNull("name")) o.getString("name") else null,
-                landscape = s("landscape"),
-                square = s("square"),
-                icon = s("icon"),
-                hero = s("hero"),
-            )
-        }.getOrNull()
-    }
-
-    private fun decode(bytes: ByteArray) =
-        runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }.getOrNull()
-
-    private fun download(url: String): ByteArray? {
-        gate.acquireUninterruptibly()
-        try {
-            val c = URL(url).openConnection() as HttpURLConnection
-            c.connectTimeout = 6000
-            c.readTimeout = 8000
-            c.instanceFollowRedirects = true
-            return try {
-                if (c.responseCode != 200) null
-                else c.inputStream.use { it.readBytes() }.takeIf { it.size in 1..4_000_000 }
-            } finally {
-                c.disconnect()
-            }
-        } catch (e: Exception) {
-            return null
-        } finally {
-            gate.release()
-        }
-    }
-}
+        var allDefinitive = true
