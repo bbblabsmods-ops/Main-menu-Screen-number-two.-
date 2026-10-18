@@ -21,6 +21,9 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
 
     private val prefs = context.getSharedPreferences("assistant", Context.MODE_PRIVATE)
 
+    /** Set by the background service so apps open even when the launcher isn't on screen. */
+    var launcher: ((AppEntry) -> Unit)? = null
+
     fun apiKey(): String = prefs.getString("claude_key", "") ?: ""
     fun saveApiKey(key: String) { prefs.edit().putString("claude_key", key.trim()).apply() }
 
@@ -73,7 +76,7 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         }
         rest = rest.trim().trimEnd('?', '!', '.', ' ', ',')
         val q = rest.lowercase()
-        if (q.isEmpty()) return "Yes? I'm listening."
+        if (q.isEmpty()) return "Sup"
 
         val local = withContext(Dispatchers.Main) { tryCommand(q) }
         if (local != null) return local
@@ -162,7 +165,8 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
             }
 
         if (hit != null) {
-            viewModel.launch(hit)
+            val custom = launcher
+            if (custom != null) custom(hit) else viewModel.launch(hit)
             return "Opening ${hit.label}."
         }
         if (n.contains("youtube")) {
