@@ -40,6 +40,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Palette
@@ -134,6 +135,7 @@ private enum class Page(val title: String, val icon: ImageVector) {
     APPS("Apps", Icons.Default.Apps),
     TOOLS("Tools", Icons.Default.Build),
     COLORS("Colors", Icons.Default.Palette),
+    ASSISTANT("Assistant", Icons.Default.AutoAwesome),
 }
 
 @Composable
@@ -251,6 +253,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 when (page) {
                     Page.TOOLS -> ToolsPage(viewModel, hiddenCount)
                     Page.COLORS -> ColorsPage(apps, tileColors)
+                    Page.ASSISTANT -> AssistantPage(viewModel)
                     else -> LazyVerticalGrid(
                         columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
                         modifier = Modifier.weight(1f),
@@ -312,6 +315,7 @@ private fun Rail(selected: Page, onSelect: (Page) -> Unit) {
             .fillMaxHeight()
             .width(84.dp)
             .glass(32.dp)
+            .verticalScroll(rememberScrollState())
             .padding(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
