@@ -17,7 +17,7 @@ class ArtRepository(context: Context) {
 
     private val dir = File(context.cacheDir, "art2").apply { mkdirs() }
     private val mem = LruCache<String, ImageBitmap>(120)
-    private val gate = Semaphore(4)
+    private val gate = Semaphore(3)
     private val oneDay = 86_400_000L
     private val exts = listOf("png", "jpg", "webp")
     private val raw = "https://raw.githubusercontent.com/"
@@ -56,7 +56,7 @@ class ArtRepository(context: Context) {
         }
         if (none.exists() && System.currentTimeMillis() - none.lastModified() < oneDay) return null
 
-        val urls = bases.flatMap { b -> exts.map { e -> "$b$pkg.$e" } } + extra.filter { it.startsWith("http") }
+        val urls = extra.filter { it.startsWith("http") } + bases.flatMap { b -> exts.map { e -> "$b$pkg.$e" } }
         var allDefinitive = true
         for (url in urls) {
             val r = download(url)
