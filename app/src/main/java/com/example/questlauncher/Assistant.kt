@@ -22,17 +22,21 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
     private val prefs = context.getSharedPreferences("assistant", Context.MODE_PRIVATE)
 
     fun apiKey(): String = prefs.getString("claude_key", "") ?: ""
+    fun saveApiKey(key: String) { prefs.edit().putString("claude_key", key.trim()).apply() }
 
-    fun saveApiKey(key: String) {
-        prefs.edit().putString("claude_key", key.trim()).apply()
+    fun geminiKey(): String = prefs.getString("gemini_key", "") ?: ""
+    fun saveGeminiKey(key: String) { prefs.edit().putString("gemini_key", key.trim()).apply() }
+
+    fun geminiModel(): String = prefs.getString("gemini_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
+    fun saveGeminiModel(name: String) {
+        prefs.edit().putString("gemini_model", name.trim().ifEmpty { "gemini-3.8-flash" }).apply()
     }
 
-    /** When on, the assistant only reacts to messages that start with "Hey BBB". */
     fun wakeWord(): Boolean = prefs.getBoolean("wake_word", true)
+    fun setWakeWord(on: Boolean) { prefs.edit().putBoolean("wake_word", on).apply() }
 
-    fun setWakeWord(on: Boolean) {
-        prefs.edit().putBoolean("wake_word", on).apply()
-    }
+    fun voiceOn(): Boolean = prefs.getBoolean("voice_on", false)
+    fun setVoiceOn(on: Boolean) { prefs.edit().putBoolean("voice_on", on).apply() }
 
     private val wakeRegex = Regex(
         "^\\s*(?:hey|hi|ok|okay|hello|yo)[,.\\s]+(?:b\\.?\\s?b\\.?\\s?b\\.?|bee\\s?bee\\s?bee|triple\\s?b)" +
@@ -40,34 +44,62 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         RegexOption.IGNORE_CASE,
     )
 
+    // How the speech recognizer tends to write "hey BBB": "hey b b b", "hey be be be", "hey bbc"...
+    private val spokenWake = Regex(
+        "^(?:hey|hay|hi|ok|okay|hello|a)\\s+(?:bbb|bbc|bb|(?:(?:b|be|bee|d|p|v)\\s+){1,2}(?:b|be|bee|d|p|v))\\b"
+    )
+
+    /** Returns "hey bbb <rest>" if the spoken text starts with the wake phrase, otherwise null. */
+    fun normalizeSpoken(heard: String): String? {
+        val t = heard.trim().lowercase()
+        val m = spokenWake.find(t) ?: return null
+        val rest = t.substring(m.range.last + 1).trim()
+        return if (rest.isEmpty()) "hey bbb" else "hey bbb $rest"
+    }
+
     private val helpText =
         "I can open apps (\"open Beat Saber\"), do math (\"what is 12 times 12\"), tell you the time, " +
-            "date or battery, set the refresh rate (\"set 90 Hz\"), open Settings, tell a short story, " +
-            "and look things up (\"what is a black hole\"). Add a Claude key in AI settings to answer anything."
+            "date or battery, set the refresh rate (\"set 90 Hz\"), open Settings, tell stories, " +
+            "and answer questions."
 
     suspend fun reply(input: String, history: List<ChatMessage>): String {
-        var q = input.trim()
-        val wake = wakeRegex.find(q)
+        var rest = input.trim()
+        val wake = wakeRegex.find(rest)
         if (wake != null) {
-            q = q.substring(wake.range.last + 1)
+            rest = rest.substring(wake.range.last + 1)
         } else if (wakeWord()) {
             return "Say \"Hey BBB\" first, like: \"Hey BBB, what time is it?\" " +
                 "(You can turn this off in AI settings.)"
         }
-        q = q.trim().lowercase().trimEnd('?', '!', '.', ' ', ',')
+        rest = rest.trim().trimEnd('?', '!', '.', ' ', ',')
+        val q = rest.lowercase()
         if (q.isEmpty()) return "Yes? I'm listening."
 
         val local = withContext(Dispatchers.Main) { tryCommand(q) }
         if (local != null) return local
 
+        // The question to send to an AI, without the "Hey BBB" part.
+        val aiHistory = history.dropLast(1) + ChatMessage(true, rest)
+
         return withContext(Dispatchers.IO) {
-            val key = apiKey()
-            if (key.isNotEmpty()) {
-                askClaude(key, history)
+            val claude = apiKey()
+            val gemini = geminiKey()
+            if (claude.isNotEmpty()) {
+                askClaude(claude, aiHistory)
+            } else if (gemini.isNotEmpty()) {
+                askGemini(gemini, aiHistory)
             } else {
-                val term = lookupTerm(q)
-                val answer = if (term != null && term.length > 2) webAnswer(term) else null
-                answer ?: ("I'm not sure how to help with that yet. " + helpText)
+                val free = askFree(aiHistory)
+                if (free != null) {
+                    free
+                } else if (isStory(q)) {
+                    stories.random()
+                } else {
+                    val term = lookupTerm(q)
+                    val answer = if (term != null && term.length > 2) webAnswer(term) else null
+                    answer ?: ("The free AI didn't answer (it may be busy). Try again in a few seconds. " +
+                        "For steadier answers add a free Gemini key in AI settings.")
+                }
             }
         }
     }
@@ -93,8 +125,7 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         }
 
         if (q.contains("refresh") || q.contains("hz") || q.contains("hertz")) {
-            val m = Regex("(\\d{2,3})").find(q)
-            val hz = m?.groupValues?.get(1)?.toIntOrNull()
+            val hz = Regex("(\\d{2,3})").find(q)?.groupValues?.get(1)?.toIntOrNull()
             if (hz != null) {
                 viewModel.setRefreshRate(hz)
                 return "Setting the refresh rate to $hz Hz. A message will tell you if it worked."
@@ -104,18 +135,12 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         val open = Regex("^(?:please\\s+)?(?:open|launch|start|play|run)\\s+(?:the\\s+)?(.+)$").find(q)
         if (open != null) return openByName(open.groupValues[1].trim())
 
-        val math = tryMath(q)
-        if (math != null) return math
-
-        // With a Claude key, stories are written fresh by Claude. Without one, use the built-in ones.
-        if (apiKey().isEmpty() && Regex("\\b(story|tale)\\b").containsMatchIn(q) &&
-            Regex("^(tell|read|give|say|write|i want|i need|can you tell)").containsMatchIn(q)
-        ) {
-            return stories.random()
-        }
-
-        return null
+        return tryMath(q)
     }
+
+    private fun isStory(q: String): Boolean =
+        Regex("\\b(story|tale)\\b").containsMatchIn(q) &&
+            Regex("^(tell|read|give|say|write|i want|i need|can you tell)").containsMatchIn(q)
 
     private fun openByName(name: String): String {
         val n = name.lowercase()
@@ -160,7 +185,6 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         "sixty" to 60, "seventy" to 70, "eighty" to 80, "ninety" to 90,
     )
 
-    /** Turns "twenty five" into "25" so spoken math works too. */
     private fun wordsToDigits(s: String): String {
         val out = ArrayList<String>()
         var total = 0L
@@ -228,7 +252,6 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         if (d == Math.floor(d) && Math.abs(d) < 1e15) d.toLong().toString()
         else String.format(Locale.US, "%.6f", d).trimEnd('0').trimEnd('.')
 
-    /** Tiny calculator: + - * / ^ ( ) and sqrt(). */
     private class Calc(private val s: String) {
         private var i = 0
 
@@ -309,7 +332,7 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         }
     }
 
-    // ---- stories (used when there's no Claude key) ----
+    // ---- stories (last resort when no AI answers) ----
 
     private val stories = listOf(
         "The Lighthouse Keeper's Log\n\n" +
@@ -338,7 +361,6 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
 
     // ---- looking things up ----
 
-    /** Only treat a message as a lookup when it clearly asks for one. */
     private fun lookupTerm(q: String): String? {
         val prefix = Regex(
             "^(what is|what's|what are|who is|who's|who was|tell me something about|tell me about|" +
@@ -388,11 +410,13 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         return if (end > 200) cut.substring(0, end + 1) else cut + "…"
     }
 
+    // ---- web helpers ----
+
     private fun httpGet(url: String): String? =
         try {
             val c = URL(url).openConnection() as HttpURLConnection
             c.connectTimeout = 8000
-            c.readTimeout = 10000
+            c.readTimeout = 20000
             c.setRequestProperty("User-Agent", "BBBLauncher/1.0 (Quest launcher app)")
             try {
                 if (c.responseCode == 200) c.inputStream.bufferedReader().use { it.readText() } else null
@@ -403,60 +427,169 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
             null
         }
 
-    // ---- real AI (needs a Claude API key) ----
-
-    private fun askClaude(key: String, history: List<ChatMessage>): String {
-        return try {
-            val now = SimpleDateFormat("EEEE, MMMM d, yyyy h:mm a", Locale.getDefault()).format(Date())
-            val system = "You are the assistant inside BBB Launcher, a launcher app on a Meta Quest headset. " +
-                "The user addresses you with \"Hey BBB\". Answer in plain text without markdown. " +
-                "Keep answers under 100 words, except when asked for a story or something long. " +
-                "The current date and time is $now. " +
-                "Opening apps, the time, battery and refresh rate are handled by the launcher itself " +
-                "when the user says for example \"Hey BBB, open Beat Saber\"."
-
-            val msgs = JSONArray()
-            history.takeLast(8).dropWhile { !it.fromUser }.forEach { m ->
-                msgs.put(
-                    JSONObject()
-                        .put("role", if (m.fromUser) "user" else "assistant")
-                        .put("content", m.text)
-                )
-            }
-            val body = JSONObject()
-                .put("model", "claude-haiku-5-5")
-                .put("max_tokens", 900)
-                .put("system", system)
-                .put("messages", msgs)
-
-            val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+    private fun postJson(url: String, headers: Map<String, String>, body: String, readTimeout: Int): Pair<Int, String>? =
+        try {
+            val c = URL(url).openConnection() as HttpURLConnection
             c.requestMethod = "POST"
             c.connectTimeout = 10000
-            c.readTimeout = 40000
-            c.setRequestProperty("x-api-key", key)
-            c.setRequestProperty("anthropic-version", "2023-06-01")
+            c.readTimeout = readTimeout
+            for ((k, v) in headers) c.setRequestProperty(k, v)
             c.setRequestProperty("content-type", "application/json")
             c.doOutput = true
             try {
-                c.outputStream.use { it.write(body.toString().toByteArray()) }
+                c.outputStream.use { it.write(body.toByteArray()) }
                 val code = c.responseCode
                 val stream = if (code in 200..299) c.inputStream else c.errorStream
                 val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-                if (code in 200..299) {
-                    JSONObject(text).getJSONArray("content").getJSONObject(0).getString("text")
-                } else {
-                    val msg = try {
-                        JSONObject(text).getJSONObject("error").getString("message")
-                    } catch (e: Exception) {
-                        text.take(120)
-                    }
-                    "Claude error $code: $msg"
-                }
+                Pair(code, text)
             } finally {
                 c.disconnect()
             }
         } catch (e: Exception) {
-            "I couldn't reach Claude. Check the Wi-Fi. (${e.javaClass.simpleName})"
+            null
         }
+
+    private fun errorMessage(text: String?): String {
+        if (text == null) return "no answer"
+        return try {
+            JSONObject(text).getJSONObject("error").getString("message")
+        } catch (e: Exception) {
+            text.take(120)
+        }
+    }
+
+    private fun systemPrompt(): String {
+        val now = SimpleDateFormat("EEEE, MMMM d, yyyy h:mm a", Locale.getDefault()).format(Date())
+        return "You are BBB, the voice assistant inside BBB Launcher on a Meta Quest headset. " +
+            "The user says \"Hey BBB\" to talk to you. Answer in plain text without markdown or lists. " +
+            "Keep answers short (under 80 words) because they may be read aloud, except when asked for " +
+            "a story or something long. The current date and time is $now. " +
+            "Opening apps, the time, battery, math and refresh rate are handled by the launcher itself."
+    }
+
+    private fun transcript(history: List<ChatMessage>): String =
+        history.takeLast(8).joinToString("\n") { (if (it.fromUser) "User: " else "Assistant: ") + it.text } +
+            "\nAssistant:"
+
+    // ---- free AI with no key ----
+
+    private fun usable(t: String): Boolean {
+        val l = t.lowercase()
+        return t.isNotBlank() && !(l.contains("deprecat") || l.contains("enter.pollinations") ||
+            l.contains("api key") || l.contains("important notice"))
+    }
+
+    private fun askFree(history: List<ChatMessage>): String? {
+        val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt()))
+        history.takeLast(6).dropWhile { !it.fromUser }.forEach { m ->
+            msgs.put(JSONObject().put("role", if (m.fromUser) "user" else "assistant").put("content", m.text))
+        }
+        val body = JSONObject().put("model", "openai").put("messages", msgs).toString()
+        val r = postJson("https://text.pollinations.ai/openai", emptyMap(), body, 30000)
+        if (r != null && r.first in 200..299) {
+            try {
+                val t = JSONObject(r.second).getJSONArray("choices").getJSONObject(0)
+                    .getJSONObject("message").getString("content")
+                if (usable(t)) return t.trim()
+            } catch (e: Exception) {
+            }
+        }
+
+        val last = history.lastOrNull { it.fromUser }?.text ?: return null
+        val enc = URLEncoder.encode(last, "UTF-8").replace("+", "%20")
+        val sys = URLEncoder.encode(systemPrompt(), "UTF-8").replace("+", "%20")
+        val get = httpGet("https://text.pollinations.ai/$enc?system=$sys&model=openai")
+        return if (get != null && usable(get)) get.trim() else null
+    }
+
+    // ---- Google Gemini (free key from aistudio.google.com/apikey) ----
+
+    private fun extractGemini(text: String): String? {
+        return try {
+            val o = JSONObject(text)
+            val steps = o.optJSONArray("steps")
+            if (steps != null) {
+                for (i in steps.length() - 1 downTo 0) {
+                    val content = steps.getJSONObject(i).optJSONArray("content") ?: continue
+                    val sb = StringBuilder()
+                    for (j in 0 until content.length()) sb.append(content.getJSONObject(j).optString("text"))
+                    if (sb.isNotBlank()) return sb.toString().trim()
+                }
+            }
+            val parts = o.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+            if (parts != null) {
+                val sb = StringBuilder()
+                for (j in 0 until parts.length()) sb.append(parts.getJSONObject(j).optString("text"))
+                if (sb.isNotBlank()) return sb.toString().trim()
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun askGemini(key: String, history: List<ChatMessage>): String {
+        val model = geminiModel()
+        val headers = mapOf("x-goog-api-key" to key)
+        val input = transcript(history)
+
+        val body1 = JSONObject()
+            .put("model", model)
+            .put("system_instruction", systemPrompt())
+            .put("input", input)
+            .put("store", false)
+        val r1 = postJson("https://generativelanguage.googleapis.com/v1beta/interactions", headers, body1.toString(), 40000)
+        if (r1 != null && r1.first in 200..299) {
+            val t = extractGemini(r1.second)
+            if (t != null) return t
+        }
+
+        val body2 = JSONObject()
+            .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt()))))
+            .put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", input)))
+                )
+            )
+        val r2 = postJson(
+            "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent",
+            headers, body2.toString(), 40000,
+        )
+        if (r2 != null && r2.first in 200..299) {
+            val t = extractGemini(r2.second)
+            if (t != null) return t
+        }
+
+        val err = r2 ?: r1
+        return if (err == null) "I couldn't reach Gemini. Check the Wi-Fi."
+        else "Gemini error ${err.first}: ${errorMessage(err.second)}"
+    }
+
+    // ---- Claude (paid, optional) ----
+
+    private fun askClaude(key: String, history: List<ChatMessage>): String {
+        val msgs = JSONArray()
+        history.takeLast(8).dropWhile { !it.fromUser }.forEach { m ->
+            msgs.put(JSONObject().put("role", if (m.fromUser) "user" else "assistant").put("content", m.text))
+        }
+        val body = JSONObject()
+            .put("model", "claude-haiku-5-5")
+            .put("max_tokens", 900)
+            .put("system", systemPrompt())
+            .put("messages", msgs)
+        val r = postJson(
+            "https://api.anthropic.com/v1/messages",
+            mapOf("x-api-key" to key, "anthropic-version" to "2023-06-01"),
+            body.toString(), 40000,
+        ) ?: return "I couldn't reach Claude. Check the Wi-Fi."
+        if (r.first in 200..299) {
+            try {
+                return JSONObject(r.second).getJSONArray("content").getJSONObject(0).getString("text")
+            } catch (e: Exception) {
+            }
+        }
+        return "Claude error ${r.first}: ${errorMessage(r.second)}"
     }
 }
