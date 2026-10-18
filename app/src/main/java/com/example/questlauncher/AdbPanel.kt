@@ -36,10 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-private val PanelAccent = Color(0xFF7C5CFF)
-private val PanelGlass = Color(0x14FFFFFF)
-private val PanelBorder = Color(0x22FFFFFF)
-private val PanelDim = Color(0xFF8A94A3)
+private val PanelDim = Color(0xFF9AA4B5)
 
 @Composable
 fun AdbPanel(viewModel: LauncherViewModel) {
@@ -52,25 +49,22 @@ fun AdbPanel(viewModel: LauncherViewModel) {
 
     LaunchedEffect(Unit) { viewModel.refreshAdbState() }
 
-    val shape = RoundedCornerShape(24.dp)
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(PanelGlass)
-            .border(1.dp, PanelBorder, shape)
+            .glass(26.dp)
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .size(10.dp)
+                    .size(12.dp)
                     .clip(CircleShape)
                     .background(if (state.connected) Color(0xFF3DDC84) else Color(0xFFE5534B))
             )
             Spacer(Modifier.width(10.dp))
-            Text("Wireless debugging", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text("Wireless debugging", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
         }
 
         Text(state.message, color = Color.White, fontSize = 14.sp)
@@ -122,7 +116,7 @@ fun AdbPanel(viewModel: LauncherViewModel) {
 
         PanelButton(
             if (state.autoConnect) "Auto-connect: On" else "Auto-connect: Off",
-            true, Modifier.fillMaxWidth(), primary = false,
+            true, Modifier.fillMaxWidth(), primary = state.autoConnect,
         ) { viewModel.setAutoConnect(!state.autoConnect) }
     }
 }
@@ -147,8 +141,8 @@ private fun Field(
             focusedTextColor = Color.White,
             unfocusedTextColor = Color.White,
             cursorColor = Color.White,
-            focusedBorderColor = PanelAccent,
-            unfocusedBorderColor = PanelBorder,
+            focusedBorderColor = Color(0xFF2DD4F0),
+            unfocusedBorderColor = Color(0x33FFFFFF),
             focusedLabelColor = Color.White,
             unfocusedLabelColor = PanelDim,
         ),
@@ -164,17 +158,18 @@ private fun PanelButton(
     primary: Boolean,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(18.dp)
     Box(
         modifier
+            .hoverLift(1.04f)
             .alpha(if (enabled) 1f else 0.5f)
             .clip(shape)
-            .background(if (primary) PanelAccent else Color(0x1AFFFFFF))
-            .border(1.dp, if (primary) PanelAccent else PanelBorder, shape)
+            .then(if (primary) Modifier.background(AccentGradient) else Modifier.background(GlassFill))
+            .border(1.dp, GlassEdge, shape)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 16.dp, horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
     }
 }
