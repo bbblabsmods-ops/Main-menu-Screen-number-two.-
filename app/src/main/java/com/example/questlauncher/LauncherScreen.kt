@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Wifi
@@ -63,6 +65,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -87,14 +90,25 @@ private val GlassBorder = Color(0x22FFFFFF)
 private val Accent = Color(0xFF7C5CFF)
 private val Dim = Color(0xFF8A94A3)
 
+private val Swatches = listOf(
+    Color(0xFFE5534B), Color(0xFFF2994A), Color(0xFFF2C94C), Color(0xFF3DDC84),
+    Color(0xFF27AE9A), Color(0xFF2D9CDB), Color(0xFF2F5BEA), Color(0xFF7C5CFF),
+    Color(0xFFBB6BD9), Color(0xFFEB5FA0), Color(0xFF8B5E3C), Color(0xFF6B7280),
+    Color(0xFF111827), Color(0xFFFFFFFF),
+)
+
 private enum class Page(val title: String, val icon: ImageVector) {
     GAMES("Games", Icons.Default.SportsEsports),
     APPS("Apps", Icons.Default.Apps),
     TOOLS("Tools", Icons.Default.Build),
+    COLORS("Colors", Icons.Default.Palette),
 }
 
 @Composable
 fun LauncherScreen(viewModel: LauncherViewModel) {
+    val context = LocalContext.current
+    val tileColors = remember { TileColors(context) }
+
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
@@ -105,6 +119,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     var query by remember { mutableStateOf("") }
     var sortMenu by remember { mutableStateOf(false) }
 
+    val isGrid = page == Page.GAMES || page == Page.APPS
     val tab = if (page == Page.APPS) LauncherTab.APPS else LauncherTab.GAMES
 
     val visible = remember(apps, page, sort, query) {
@@ -126,12 +141,23 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
         Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 24.dp, vertical = 18.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(page.title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                    if (page != Page.TOOLS) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(page.title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.width(12.dp))
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Accent)
+                                .padding(horizontal = 14.dp, vertical = 5.dp),
+                        ) {
+                            Text("BBB", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (isGrid) {
                         Text("${visible.size} items", color = Dim, fontSize = 13.sp)
                     }
                 }
-                if (page != Page.TOOLS) {
+                if (isGrid) {
                     Box {
                         IconButton(onClick = { sortMenu = true }) {
                             Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Color.White)
@@ -156,7 +182,7 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 StatusInfo()
             }
 
-            if (searching && page != Page.TOOLS) {
+            if (searching && isGrid) {
                 val focus = remember { FocusRequester() }
                 LaunchedEffect(Unit) { focus.requestFocus() }
                 OutlinedTextField(
@@ -177,20 +203,17 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
 
             Spacer(Modifier.size(14.dp))
 
-            if (page == Page.TOOLS) {
-                ToolsPage(viewModel, hiddenCount)
-            } else {
-                LazyVerticalGrid(
+            when (page) {
+                Page.TOOLS -> ToolsPage(viewModel, hiddenCount)
+                Page.COLORS -> ColorsPage(apps, tileColors)
+                else -> LazyVerticalGrid(
                     columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     items(visible, key = { it.packageName }) { app ->
-                        AppCell(
-                            app = app,
-                            viewModel = viewModel,
-                        )
+                        AppCell(app = app, viewModel = viewModel, tileColors = tileColors)
                     }
                 }
             }
@@ -289,7 +312,7 @@ private fun StatusInfo() {
 }
 
 @Composable
-private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
+private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: TileColors) {
     var menu by remember { mutableStateOf(false) }
     val wide = app.tab.wide
     val pkg = app.packageName
@@ -302,26 +325,38 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
     }
     val icon = onlineIcon ?: app.icon
     val hue = (pkg.hashCode() and 0x7fffffff) % 360
+    val custom = tileColors.forApp(pkg)
 
     Box {
         if (wide) {
+            val brush = if (custom != null) {
+                Brush.linearGradient(listOf(custom, lerp(custom, Color.Black, 0.35f)))
+            } else {
+                Brush.linearGradient(
+                    listOf(Color.hsv(hue.toFloat(), 0.45f, 0.55f), Color.hsv(((hue + 40) % 360).toFloat(), 0.5f, 0.35f))
+                )
+            }
             Box(
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(18.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(Color.hsv(hue.toFloat(), 0.45f, 0.55f), Color.hsv(((hue + 40) % 360).toFloat(), 0.5f, 0.35f))
-                        )
-                    )
+                    .background(brush)
                     .border(1.dp, GlassBorder, RoundedCornerShape(18.dp))
                     .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true }),
                 contentAlignment = Alignment.Center,
             ) {
                 val b = banner
                 if (b != null) {
-                    Image(b, app.label, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    // With a chosen color the banner sits inside a frame so the color shows.
+                    Image(
+                        b, app.label,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(if (custom != null) 8.dp else 0.dp)
+                            .clip(RoundedCornerShape(if (custom != null) 12.dp else 0.dp)),
+                        contentScale = ContentScale.Crop,
+                    )
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         IconOrLetter(icon, app, onlineIcon != null, 64)
@@ -343,6 +378,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel) {
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
+                    .background(custom ?: Color.Transparent)
                     .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true })
                     .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -396,6 +432,77 @@ private fun IconOrLetter(icon: ImageBitmap, app: AppEntry, haveArt: Boolean, siz
         }
     } else {
         Image(icon, app.label, modifier = Modifier.size(size.dp).clip(shape))
+    }
+}
+
+@Composable
+private fun ColorsPage(apps: List<AppEntry>, tileColors: TileColors) {
+    val sorted = remember(apps) { apps.sortedBy { it.label.lowercase() } }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SectionTitle("Every game and app")
+        Text("Pick one color for all of them. Tap the X to go back to the default look.", color = Dim, fontSize = 13.sp)
+        SwatchRow(selected = tileColors.colors["*"]?.let { Color(it) }) { tileColors.setAll(it) }
+
+        SectionTitle("Each one")
+        Text("Pick a color for just one. It wins over the color above.", color = Dim, fontSize = 13.sp)
+
+        sorted.forEach { app ->
+            val shape = RoundedCornerShape(18.dp)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(shape)
+                    .background(Glass)
+                    .border(1.dp, GlassBorder, shape)
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "${app.label}  ·  ${app.tab.title}",
+                    color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                )
+                SwatchRow(
+                    selected = if (tileColors.isCustom(app.packageName))
+                        tileColors.colors[app.packageName]?.let { Color(it) } else null,
+                ) { tileColors.set(app.packageName, it) }
+            }
+        }
+        Spacer(Modifier.size(24.dp))
+    }
+}
+
+@Composable
+private fun SwatchRow(selected: Color?, onPick: (Color?) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), enabled = false),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Glass)
+                .border(if (selected == null) 3.dp else 1.dp, if (selected == null) Color.White else GlassBorder, CircleShape)
+                .clickable { onPick(null) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("✕", color = Color.White, fontSize = 16.sp)
+        }
+        Swatches.forEach { c ->
+            val isSel = selected == c
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(c)
+                    .border(if (isSel) 3.dp else 1.dp, if (isSel) Color.White else GlassBorder, CircleShape)
+                    .clickable { onPick(c) },
+            )
+        }
     }
 }
 
