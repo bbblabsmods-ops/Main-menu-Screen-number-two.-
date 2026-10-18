@@ -25,6 +25,24 @@ class ArtRepository(context: Context) {
     private val bannerBases = listOf(raw + "threethan/QuestLauncherImages/main/banner/", raw + "veticia/binaries/main/banners/")
     private val metaBase = raw + "threethan/MetaMetadata/main/data/common/"
 
+    private val logLines = ArrayList<String>()
+
+    private fun note(s: String) {
+        synchronized(logLines) {
+            logLines.add(s)
+            while (logLines.size > 120) logLines.removeAt(0)
+        }
+    }
+
+    /** What happened with recent image downloads, oldest first. */
+    fun log(): List<String> = synchronized(logLines) { logLines.toList() }
+
+    fun clearCache() {
+        mem.evictAll()
+        dir.listFiles()?.forEach { it.delete() }
+        note("cache cleared")
+    }
+
     fun banner(pkg: String): ImageBitmap? {
         val m = meta(pkg)
         val extra = listOfNotNull(m?.optString("landscape"), m?.optString("hero"))
@@ -54,7 +72,10 @@ class ArtRepository(context: Context) {
                 return d
             }
         }
-        if (none.exists() && System.currentTimeMillis() - none.lastModified() < oneDay) return null
+        if (none.exists() && System.currentTimeMillis() - none.lastModified() < oneDay) {
+            note("$kind $pkg: skipped (not found earlier)")
+            return null
+        }
 
         val urls = extra.filter { it.startsWith("http") } + bases.flatMap { b -> exts.map { e -> "$b$pkg.$e" } }
         var allDefinitive = true
@@ -65,12 +86,18 @@ class ArtRepository(context: Context) {
                 if (!r.definitive) allDefinitive = false
                 continue
             }
-            val bmp = decode(data) ?: continue
+            val bmp = decode(data)
+            if (bmp == null) {
+                note("$kind $pkg: bad picture data")
+                continue
+            }
             runCatching { file.writeBytes(data) }
             mem.put(key, bmp)
+            note("$kind $pkg: OK")
             return bmp
         }
         if (allDefinitive) runCatching { none.writeText("x") }
+        note("$kind $pkg: FAILED (" + (if (allDefinitive) "not found anywhere" else "network problem") + ")")
         return null
     }
 
@@ -84,6 +111,7 @@ class ArtRepository(context: Context) {
             val data = r.bytes
             if (data == null) {
                 if (r.definitive) runCatching { none.writeText("x") }
+                note("info $pkg: none")
                 return null
             }
             text = String(data)
@@ -96,6 +124,7 @@ class ArtRepository(context: Context) {
         runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }.getOrNull()
 
     private fun download(url: String): ArtDownload {
+        val shortUrl = url.removePrefix(raw).take(70)
         gate.acquireUninterruptibly()
         try {
             val c = URL(url).openConnection() as HttpURLConnection
@@ -107,11 +136,13 @@ class ArtRepository(context: Context) {
                     val data = c.inputStream.use { it.readBytes() }
                     return ArtDownload(if (data.size in 1..4_000_000) data else null, true)
                 }
+                note("  $code $shortUrl")
                 return ArtDownload(null, code in 400..499 && code != 429 && code != 408)
             } finally {
                 c.disconnect()
             }
         } catch (e: Exception) {
+            note("  ERR ${e.javaClass.simpleName} $shortUrl")
             return ArtDownload(null, false)
         } finally {
             gate.release()
