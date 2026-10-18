@@ -7,12 +7,16 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +26,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,7 +51,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -66,15 +70,18 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -85,11 +92,35 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val Bg = Color(0xFF0E131B)
-private val Glass = Color(0x14FFFFFF)
-private val GlassBorder = Color(0x22FFFFFF)
+private val BgTop = Color(0xFF06080F)
+private val BgBottom = Color(0xFF151033)
 private val Accent = Color(0xFF7C5CFF)
-private val Dim = Color(0xFF8A94A3)
+private val Dim = Color(0xFF9AA4B5)
+
+internal val GlassFill = Color(0x1AFFFFFF)
+internal val GlassEdge = Brush.linearGradient(listOf(Color(0x66FFFFFF), Color(0x10FFFFFF)))
+internal val AccentGradient = Brush.linearGradient(listOf(Color(0xFF7C5CFF), Color(0xFF2DD4F0)))
+
+/** Frosted-glass look: soft fill with a bright edge. */
+internal fun Modifier.glass(radius: Dp = 20.dp): Modifier =
+    this
+        .clip(RoundedCornerShape(radius))
+        .background(GlassFill)
+        .border(1.dp, GlassEdge, RoundedCornerShape(radius))
+
+/** Grows a little when the controller points at it. */
+@Composable
+internal fun Modifier.hoverLift(amount: Float = 1.05f): Modifier {
+    val source = remember { MutableInteractionSource() }
+    val hovered by source.collectIsHoveredAsState()
+    val s by animateFloatAsState(if (hovered) amount else 1f, label = "hover")
+    return this
+        .hoverable(source)
+        .graphicsLayer {
+            scaleX = s
+            scaleY = s
+        }
+}
 
 private val Swatches = listOf(
     Color(0xFFE5534B), Color(0xFFF2994A), Color(0xFFF2C94C), Color(0xFF3DDC84),
@@ -136,85 +167,99 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
             .toList()
     }
 
-    Row(Modifier.fillMaxSize().background(Bg)) {
-        Rail(page) { page = it }
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(BgTop, BgBottom)))) {
+        // soft glowing light behind everything
+        Box(
+            Modifier
+                .size(460.dp)
+                .align(Alignment.TopEnd)
+                .background(Brush.radialGradient(listOf(Color(0x447C5CFF), Color.Transparent)), CircleShape)
+        )
+        Box(
+            Modifier
+                .size(420.dp)
+                .align(Alignment.BottomStart)
+                .background(Brush.radialGradient(listOf(Color(0x332DD4F0), Color.Transparent)), CircleShape)
+        )
 
-        Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 24.dp, vertical = 18.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(page.title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.width(12.dp))
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(Accent)
-                                .padding(horizontal = 14.dp, vertical = 5.dp),
-                        ) {
-                            Text("BBB", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxSize()) {
+            Rail(page) { page = it }
+
+            Column(Modifier.weight(1f).fillMaxHeight().padding(end = 24.dp, top = 18.dp, bottom = 18.dp, start = 6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(page.title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(12.dp))
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(AccentGradient)
+                                    .padding(horizontal = 14.dp, vertical = 5.dp),
+                            ) {
+                                Text("BBB", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                        if (isGrid) {
+                            Text("${visible.size} items", color = Dim, fontSize = 13.sp)
                         }
                     }
                     if (isGrid) {
-                        Text("${visible.size} items", color = Dim, fontSize = 13.sp)
-                    }
-                }
-                if (isGrid) {
-                    Box {
-                        IconButton(onClick = { sortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Color.White)
-                        }
-                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                            SortMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = { Text(mode.label) },
-                                    onClick = { sort = mode; sortMenu = false },
-                                )
+                        Box {
+                            GlassIconButton(Icons.AutoMirrored.Filled.Sort, "Sort") { sortMenu = true }
+                            DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                                SortMode.entries.forEach { mode ->
+                                    DropdownMenuItem(
+                                        text = { Text(mode.label) },
+                                        onClick = { sort = mode; sortMenu = false },
+                                    )
+                                }
                             }
                         }
+                        Spacer(Modifier.width(10.dp))
+                        GlassIconButton(Icons.Default.Search, "Search") {
+                            searching = !searching
+                            if (!searching) query = ""
+                        }
+                        Spacer(Modifier.width(10.dp))
                     }
-                    IconButton(onClick = {
-                        searching = !searching
-                        if (!searching) query = ""
-                    }) {
-                        Icon(Icons.Default.Search, "Search", tint = Color.White)
-                    }
+                    StatusInfo()
                 }
-                Spacer(Modifier.width(12.dp))
-                StatusInfo()
-            }
 
-            if (searching && isGrid) {
-                val focus = remember { FocusRequester() }
-                LaunchedEffect(Unit) { focus.requestFocus() }
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    singleLine = true,
-                    placeholder = { Text("Search ${page.title.lowercase()}") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedBorderColor = Accent,
-                        unfocusedBorderColor = GlassBorder,
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).focusRequester(focus),
-                )
-            }
+                if (searching && isGrid) {
+                    val focus = remember { FocusRequester() }
+                    LaunchedEffect(Unit) { focus.requestFocus() }
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        placeholder = { Text("Search ${page.title.lowercase()}") },
+                        shape = RoundedCornerShape(20.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = Color.White,
+                            focusedBorderColor = Color(0xFF2DD4F0),
+                            unfocusedBorderColor = Color(0x33FFFFFF),
+                        ),
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp).focusRequester(focus),
+                    )
+                }
 
-            Spacer(Modifier.size(14.dp))
+                Spacer(Modifier.size(16.dp))
 
-            when (page) {
-                Page.TOOLS -> ToolsPage(viewModel, hiddenCount)
-                Page.COLORS -> ColorsPage(apps, tileColors)
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    items(visible, key = { it.packageName }) { app ->
-                        AppCell(app = app, viewModel = viewModel, tileColors = tileColors)
+                when (page) {
+                    Page.TOOLS -> ToolsPage(viewModel, hiddenCount)
+                    Page.COLORS -> ColorsPage(apps, tileColors)
+                    else -> LazyVerticalGrid(
+                        columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        items(visible, key = { it.packageName }) { app ->
+                            AppCell(app = app, viewModel = viewModel, tileColors = tileColors)
+                        }
                     }
                 }
             }
@@ -246,30 +291,58 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
 }
 
 @Composable
+private fun GlassIconButton(icon: ImageVector, description: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .hoverLift(1.1f)
+            .size(46.dp)
+            .glass(23.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, description, tint = Color.White, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
 private fun Rail(selected: Page, onSelect: (Page) -> Unit) {
     Column(
         Modifier
+            .padding(14.dp)
             .fillMaxHeight()
-            .width(96.dp)
-            .background(Glass)
-            .padding(vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .width(84.dp)
+            .glass(32.dp)
+            .padding(vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(AccentGradient),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("B", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(Modifier.size(8.dp))
         Page.entries.forEach { p ->
             val sel = p == selected
             Column(
                 Modifier
-                    .width(76.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(if (sel) Accent else Color.Transparent)
+                    .hoverLift(1.08f)
+                    .width(64.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .then(if (sel) Modifier.background(AccentGradient) else Modifier)
                     .clickable { onSelect(p) }
-                    .padding(vertical = 12.dp),
+                    .padding(vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(p.icon, p.title, tint = if (sel) Color.White else Dim, modifier = Modifier.size(26.dp))
-                Spacer(Modifier.size(4.dp))
-                Text(p.title, color = if (sel) Color.White else Dim, fontSize = 12.sp)
+                Spacer(Modifier.size(3.dp))
+                Text(
+                    p.title,
+                    color = if (sel) Color.White else Dim,
+                    fontSize = 11.sp,
+                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                )
             }
         }
     }
@@ -299,16 +372,19 @@ private fun StatusInfo() {
         }
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(time, color = Color.White, fontSize = 15.sp)
-        Spacer(Modifier.width(8.dp))
+    Row(
+        Modifier.glass(23.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.width(10.dp))
         Icon(
             if (wifi) Icons.Default.Wifi else Icons.Default.WifiOff, null,
-            tint = Color.White, modifier = Modifier.size(18.dp),
+            tint = Color.White, modifier = Modifier.size(17.dp),
         )
-        Spacer(Modifier.width(6.dp))
-        Icon(Icons.Default.BatteryChargingFull, null, tint = Color.White, modifier = Modifier.size(18.dp))
-        Text("$battery%", color = Dim, fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Icon(Icons.Default.BatteryChargingFull, null, tint = Color(0xFF3DDC84), modifier = Modifier.size(17.dp))
+        Text("$battery%", color = Dim, fontSize = 12.sp)
     }
 }
 
@@ -348,20 +424,22 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
 
     Box {
         if (wide) {
+            val shape = RoundedCornerShape(24.dp)
             val brush = if (custom != null) {
                 Brush.linearGradient(listOf(custom, lerp(custom, Color.Black, 0.35f)))
             } else {
                 Brush.linearGradient(
-                    listOf(Color.hsv(hue.toFloat(), 0.45f, 0.55f), Color.hsv(((hue + 40) % 360).toFloat(), 0.5f, 0.35f))
+                    listOf(Color.hsv(hue.toFloat(), 0.5f, 0.6f), Color.hsv(((hue + 40) % 360).toFloat(), 0.55f, 0.32f))
                 )
             }
             Box(
                 Modifier
+                    .hoverLift(1.06f)
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(18.dp))
+                    .clip(shape)
                     .background(brush)
-                    .border(1.dp, GlassBorder, RoundedCornerShape(18.dp))
+                    .border(1.dp, GlassEdge, shape)
                     .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true }),
                 contentAlignment = Alignment.Center,
             ) {
@@ -372,7 +450,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(if (custom != null) 8.dp else 0.dp)
-                            .clip(RoundedCornerShape(if (custom != null) 12.dp else 0.dp)),
+                            .clip(RoundedCornerShape(if (custom != null) 16.dp else 0.dp)),
                         contentScale = ContentScale.Crop,
                     )
                 } else {
@@ -383,6 +461,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
                             app.label,
                             color = Color.White,
                             fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.Center,
@@ -392,13 +471,16 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
                 }
             }
         } else {
+            val shape = RoundedCornerShape(22.dp)
             Column(
                 Modifier
+                    .hoverLift(1.08f)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(custom ?: Color.Transparent)
+                    .clip(shape)
+                    .background(custom ?: Color(0x12FFFFFF))
+                    .border(1.dp, GlassEdge, shape)
                     .combinedClickable(onClick = { viewModel.launch(app) }, onLongClick = { menu = true })
-                    .padding(6.dp),
+                    .padding(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 IconOrLetter(icon, app, onlineIcon != null, 76)
@@ -407,6 +489,7 @@ private fun AppCell(app: AppEntry, viewModel: LauncherViewModel, tileColors: Til
                     app.label,
                     color = Color.White,
                     fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
@@ -469,14 +552,11 @@ private fun ColorsPage(apps: List<AppEntry>, tileColors: TileColors) {
         Text("Pick a color for just one. It wins over the color above.", color = Dim, fontSize = 13.sp)
 
         sorted.forEach { app ->
-            val shape = RoundedCornerShape(18.dp)
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(shape)
-                    .background(Glass)
-                    .border(1.dp, GlassBorder, shape)
-                    .padding(14.dp),
+                    .glass(22.dp)
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
@@ -496,15 +576,16 @@ private fun ColorsPage(apps: List<AppEntry>, tileColors: TileColors) {
 @Composable
 private fun SwatchRow(selected: Color?, onPick: (Color?) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(
             Modifier
+                .hoverLift(1.15f)
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(Glass)
-                .border(if (selected == null) 3.dp else 1.dp, if (selected == null) Color.White else GlassBorder, CircleShape)
+                .background(GlassFill)
+                .border(if (selected == null) 3.dp else 1.dp, if (selected == null) Color.White else Color(0x33FFFFFF), CircleShape)
                 .clickable { onPick(null) },
             contentAlignment = Alignment.Center,
         ) {
@@ -514,10 +595,11 @@ private fun SwatchRow(selected: Color?, onPick: (Color?) -> Unit) {
             val isSel = selected == c
             Box(
                 Modifier
+                    .hoverLift(1.15f)
                     .size(40.dp)
                     .clip(CircleShape)
                     .background(c)
-                    .border(if (isSel) 3.dp else 1.dp, if (isSel) Color.White else GlassBorder, CircleShape)
+                    .border(if (isSel) 3.dp else 1.dp, if (isSel) Color.White else Color(0x33FFFFFF), CircleShape)
                     .clickable { onPick(c) },
             )
         }
@@ -528,17 +610,17 @@ private fun SwatchRow(selected: Color?, onPick: (Color?) -> Unit) {
 private fun ToolsPage(viewModel: LauncherViewModel, hiddenCount: Int) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         SectionTitle("Refresh rate")
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             listOf(60, 72, 90, 120, 200).forEach { hz ->
-                ToolChip("$hz Hz") { viewModel.setRefreshRate(hz) }
+                ToolChip("$hz Hz", primary = true) { viewModel.setRefreshRate(hz) }
             }
         }
 
         SectionTitle("Shortcuts")
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             ToolChip("Android Settings") { viewModel.openAndroidSettings() }
             ToolChip("YouTube VR") { viewModel.openYouTubeVr() }
             ToolChip("Developer options") { viewModel.openDeveloperSettings() }
@@ -550,28 +632,59 @@ private fun ToolsPage(viewModel: LauncherViewModel, hiddenCount: Int) {
         }
 
         AdbPanel(viewModel)
+        ImageCheck(viewModel)
         Spacer(Modifier.size(24.dp))
     }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(text, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+private fun ImageCheck(viewModel: LauncherViewModel) {
+    var lines by remember { mutableStateOf(listOf<String>()) }
+    Column(
+        Modifier.fillMaxWidth().glass(26.dp).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        SectionTitle("Image check")
+        Text(
+            "If some games have no picture, tap Show log and send a screenshot of it.",
+            color = Dim, fontSize = 13.sp,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ToolChip("Show log") { lines = viewModel.art.log().takeLast(40).reversed() }
+            ToolChip("Clear image cache") {
+                viewModel.art.clearCache()
+                lines = viewModel.art.log().reversed()
+            }
+        }
+        lines.forEach {
+            Text(it, color = Dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+        }
+    }
 }
 
 @Composable
-private fun ToolChip(text: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(16.dp)
+private fun SectionTitle(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(5.dp).height(20.dp).clip(RoundedCornerShape(3.dp)).background(AccentGradient))
+        Spacer(Modifier.width(10.dp))
+        Text(text, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun ToolChip(text: String, primary: Boolean = false, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(20.dp)
     Box(
         Modifier
+            .hoverLift(1.07f)
             .clip(shape)
-            .background(Glass)
-            .border(1.dp, GlassBorder, shape)
+            .then(if (primary) Modifier.background(AccentGradient) else Modifier.background(GlassFill))
+            .border(1.dp, GlassEdge, shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 22.dp, vertical = 15.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = Color.White, fontSize = 15.sp)
+        Text(text, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
     }
 }
 
