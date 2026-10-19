@@ -1,9 +1,9 @@
 package com.example.questlauncher
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +58,7 @@ private val ChatDim = Color(0xFF9AA4B5)
 fun AssistantPage(viewModel: LauncherViewModel) {
     val context = LocalContext.current
     val assistant = remember { Assistant(context, viewModel) }
+    val prefs = remember { context.getSharedPreferences("assistant", Context.MODE_PRIVATE) }
 
     val messages by AssistantHub.messages.collectAsState()
     val status by AssistantHub.status.collectAsState()
@@ -70,8 +71,17 @@ fun AssistantPage(viewModel: LauncherViewModel) {
     var geminiModel by remember { mutableStateOf(assistant.geminiModel()) }
     var wake by remember { mutableStateOf(assistant.wakeWord()) }
     var voiceOn by remember { mutableStateOf(assistant.voiceOn()) }
+    var popupMode by remember { mutableStateOf(prefs.getInt("popup_mode", 1)) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+
+    val builtInKey = remember {
+        try {
+            context.assets.open("gemini.txt").bufferedReader().use { it.readText() }.isNotBlank()
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     fun hasMic(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -170,9 +180,9 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         }
     }
 
-    fun allowPopup() {
+    // Only needed for the "Banner" style. Never opens a menu.
+    fun allowBanner() {
         scope.launch {
-            AssistantHub.setStatus("Allowing popups…")
             val connected = withContext(Dispatchers.IO) {
                 val adb = AdbController(context)
                 if (adb.isConnected()) {
@@ -184,24 +194,22 @@ fun AssistantPage(viewModel: LauncherViewModel) {
             }
             popupOk = Settings.canDrawOverlays(context)
             if (popupOk) {
-                AssistantHub.setStatus("Popups allowed. They also let BBB open apps while you're in another app.")
-            } else if (connected) {
-                AssistantHub.setStatus("The headset still says no. Try again in a moment.")
+                AssistantHub.setStatus("Banner allowed.")
+            } else if (!connected) {
+                AssistantHub.setStatus("Connect Wireless debugging in Tools first, then try again.")
             } else {
-                try {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}"),
-                    )
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                } catch (e: Exception) {
-                }
-                AssistantHub.setStatus(
-                    "If Settings didn't open, connect Wireless debugging in Tools, then tap this again."
-                )
+                AssistantHub.setStatus("The headset still says no. Try again in a moment.")
             }
         }
+    }
+
+    fun cyclePopup() {
+        popupMode = when (popupMode) {
+            1 -> 2
+            2 -> 0
+            else -> 1
+        }
+        prefs.edit().putInt("popup_mode", popupMode).apply()
     }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
@@ -245,10 +253,10 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "Free AI: BBB already tries a free AI that needs no key and no payment. If it is busy " +
-                        "or slow, add a free Google Gemini key from aistudio.google.com/apikey. " +
-                        "Google lists its Flash models as free of charge on the free tier. " +
-                        "Free-tier requests may be used by Google to improve its products.",
+                    if (builtInKey) "A Gemini key is built into this app, so the AI should work without typing one."
+                    else "Free AI: BBB tries a free AI that needs no key. If it is busy or slow, add a free " +
+                        "Google Gemini key from aistudio.google.com/apikey. Free-tier requests may be " +
+                        "used by Google to improve its products.",
                     color = ChatDim, fontSize = 13.sp,
                 )
                 OutlinedTextField(
@@ -297,11 +305,26 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                         assistant.setWakeWord(wake)
                     }
                 }
+                Text(
+                    "Replies while you play: Notification (default) shows a small notification and toast " +
+                        "that don't take over your game. Banner draws a window on top, which on Quest can " +
+                        "take your controls for a few seconds. Off uses sounds only.",
+                    color = ChatDim, fontSize = 13.sp,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ChipButton(
-                        if (popupOk) "Popup over other apps: Allowed" else "Allow popup over other apps",
-                        popupOk,
-                    ) { allowPopup() }
+                        when (popupMode) {
+                            0 -> "Replies: Off (sounds only)"
+                            2 -> "Replies: Banner"
+                            else -> "Replies: Notification"
+                        },
+                        popupMode != 0,
+                    ) { cyclePopup() }
+                }
+                if (popupMode == 2 && !popupOk) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ChipButton("Allow banner (Wireless debugging)", false) { allowBanner() }
+                    }
                 }
                 if (!micOk) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
