@@ -29,6 +29,10 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="com.oculus.intent.category.VR" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <package android:name="com.reecedunn.espeak" />
     </queries>
 
     <application
