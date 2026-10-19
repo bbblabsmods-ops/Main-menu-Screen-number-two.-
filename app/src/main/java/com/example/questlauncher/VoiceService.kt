@@ -19,12 +19,13 @@ class VoiceService : Service() {
     private lateinit var vm: LauncherViewModel
     private lateinit var assistant: Assistant
     private lateinit var speaker: Speaker
+    private lateinit var beeper: Beeper
     private lateinit var popup: Popup
     private lateinit var voice: VoiceListener
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var awaitingUntil = 0L
-    private var ignoreUntil = 0L
+    private var heardWake = false
     private var busy = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -36,11 +37,13 @@ class VoiceService : Service() {
         assistant = Assistant(this, vm)
         assistant.launcher = { app -> launchApp(app) }
         speaker = Speaker(this)
+        beeper = Beeper()
         popup = Popup(this)
         voice = VoiceListener(
             context = this,
             onText = { heard -> onHeard(heard) },
             onStatus = { s -> AssistantHub.setStatus(s) },
+            onPartial = { p -> onPartial(p) },
         )
     }
 
@@ -79,30 +82,49 @@ class VoiceService : Service() {
             .build()
     }
 
+    /** Runs while you are still talking. Beeps the moment it hears "Hey BBB". */
+    private fun onPartial(partial: String) {
+        if (heardWake) return
+        if (assistant.normalizeSpoken(partial) != null) {
+            heardWake = true
+            beeper.beep()
+            popup.show("Sup", 9000L)
+            AssistantHub.setStatus("Listening…")
+        }
+    }
+
+    /** Runs when you finish a phrase. */
     private fun onHeard(heard: String) {
         val now = System.currentTimeMillis()
-        if (now < ignoreUntil) return
+        val alreadyBeeped = heardWake
+        heardWake = false
         AssistantHub.setStatus("Heard: $heard")
 
         val wake = assistant.normalizeSpoken(heard)
         if (wake == "hey bbb") {
+            // Just the wake phrase. The command comes next, so wait for it.
             awaitingUntil = now + 9000L
-            ignoreUntil = now + 1200L
-            AssistantHub.add(ChatMessage(false, "Sup"))
+            if (!alreadyBeeped) beeper.beep()
             popup.show("Sup", 9000L)
-            speaker.speak("Sup")
         } else if (wake != null) {
             awaitingUntil = 0L
+            if (!alreadyBeeped) beeper.beep()
             popup.show("Sup", 2500L)
             handle(wake)
         } else if (now < awaitingUntil && heard.isNotBlank()) {
             awaitingUntil = 0L
             handle("hey bbb $heard")
+        } else if (alreadyBeeped) {
+            // False alarm: it thought it heard the wake phrase but it wasn't.
+            popup.remove()
         }
     }
 
     private fun handle(text: String) {
-        if (busy) return
+        if (busy) {
+            AssistantHub.setStatus("Still working on the last one…")
+            return
+        }
         busy = true
         AssistantHub.add(ChatMessage(true, text))
         scope.launch {
@@ -113,7 +135,6 @@ class VoiceService : Service() {
             }
             AssistantHub.add(ChatMessage(false, answer))
             popup.show(answer, 4000L + answer.take(300).length * 40L)
-            ignoreUntil = System.currentTimeMillis() + 1500L + answer.take(400).length * 70L
             speaker.speak(answer)
             busy = false
         }
