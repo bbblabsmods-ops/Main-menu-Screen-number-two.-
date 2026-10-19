@@ -1,6 +1,9 @@
 package com.example.questlauncher
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -20,6 +23,7 @@ class VoiceListener(
     private val context: Context,
     private val onText: (String) -> Unit,
     private val onStatus: (String) -> Unit,
+    private val onPartial: (String) -> Unit = {},
 ) : RecognitionListener {
 
     private val modelName = "vosk-model-small-en-us-0.15"
@@ -143,7 +147,16 @@ class VoiceListener(
         }
     }
 
-    override fun onPartialResult(hypothesis: String?) {}
+    /** Words heard so far, while you are still talking. Used to react to "Hey BBB" instantly. */
+    override fun onPartialResult(hypothesis: String?) {
+        if (hypothesis == null) return
+        val p = try {
+            JSONObject(hypothesis).optString("partial").trim()
+        } catch (e: Exception) {
+            ""
+        }
+        if (p.isNotEmpty()) main.post { onPartial(p) }
+    }
 
     override fun onResult(hypothesis: String?) {
         val t = textOf(hypothesis) ?: return
@@ -192,5 +205,51 @@ class Speaker(context: Context) {
         }
         tts = null
         ready = false
+    }
+}
+
+/** A short two-tone beep, made by the app itself so it doesn't depend on any system sound. */
+class Beeper {
+    private val rate = 22050
+    private val pcm: ShortArray = makeTone()
+
+    private fun makeTone(): ShortArray {
+        val n = (rate * 0.22).toInt()
+        val out = ShortArray(n)
+        for (i in 0 until n) {
+            val t = i.toDouble() / rate
+            val f = if (i < n / 2) 880.0 else 1320.0
+            val edge = minOf(i, n - i).toDouble() / (rate * 0.02)
+            val env = if (edge > 1.0) 1.0 else edge
+            out[i] = (Math.sin(2.0 * Math.PI * f * t) * env * 0.6 * 32767.0).toInt().toShort()
+        }
+        return out
+    }
+
+    fun beep() {
+        Thread {
+            try {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                val format = AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(pcm.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                track.write(pcm, 0, pcm.size)
+                track.play()
+                Thread.sleep(450)
+                track.release()
+            } catch (e: Exception) {
+            }
+        }.start()
     }
 }
