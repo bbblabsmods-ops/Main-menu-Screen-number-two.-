@@ -1,5 +1,8 @@
 package com.example.questlauncher
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -14,21 +17,66 @@ import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
 
-/** A small pill at the top of the screen. Falls back to a toast if popups aren't allowed. */
+/**
+ * Shows short text without taking over your game.
+ * Mode 1 (default): a notification plus a toast. Neither takes control away from the game.
+ * Mode 2: a banner window on top. On Quest a window like this can take game controls for a moment.
+ * Mode 0: nothing, sounds only.
+ */
 class Popup(private val context: Context) {
 
+    private val prefs = context.getSharedPreferences("assistant", Context.MODE_PRIVATE)
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val main = Handler(Looper.getMainLooper())
     private var view: TextView? = null
     private val hideRunnable = Runnable { remove() }
+    private var channelMade = false
+
+    fun mode(): Int = prefs.getInt("popup_mode", 1)
 
     fun allowed(): Boolean = Settings.canDrawOverlays(context)
 
-    fun show(text: String, millis: Long = 4000L) {
+    fun show(text: String, millis: Long = 2500L) {
+        when (mode()) {
+            0 -> { }
+            2 -> banner(text, millis)
+            else -> light(text)
+        }
+    }
+
+    private fun light(text: String) {
+        main.post {
+            try {
+                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+            }
+            try {
+                val nm = context.getSystemService(NotificationManager::class.java)
+                if (!channelMade) {
+                    nm.createNotificationChannel(
+                        NotificationChannel(CHANNEL, "BBB replies", NotificationManager.IMPORTANCE_HIGH)
+                    )
+                    channelMade = true
+                }
+                val n = Notification.Builder(context, CHANNEL)
+                    .setContentTitle("BBB")
+                    .setContentText(text)
+                    .setStyle(Notification.BigTextStyle().bigText(text))
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                    .setTimeoutAfter(5000L)
+                    .setAutoCancel(true)
+                    .build()
+                nm.notify(NOTE_ID, n)
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun banner(text: String, millis: Long) {
         main.post {
             main.removeCallbacks(hideRunnable)
             if (!allowed()) {
-                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                light(text)
                 return@post
             }
             try {
@@ -37,10 +85,10 @@ class Popup(private val context: Context) {
                     view = it
                 }
                 v.text = text
-                main.postDelayed(hideRunnable, millis)
+                main.postDelayed(hideRunnable, minOf(millis, 3500L))
             } catch (e: Exception) {
                 view = null
-                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                light(text)
             }
         }
     }
@@ -90,5 +138,10 @@ class Popup(private val context: Context) {
         p.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         p.y = (36 * context.resources.displayMetrics.density).toInt()
         return p
+    }
+
+    companion object {
+        private const val CHANNEL = "bbb_replies"
+        private const val NOTE_ID = 8
     }
 }
