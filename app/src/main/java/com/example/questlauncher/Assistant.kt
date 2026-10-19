@@ -135,7 +135,7 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
             }
         }
 
-        val open = Regex("^(?:please\\s+)?(?:open|launch|start|play|run)\\s+(?:the\\s+)?(.+)$").find(q)
+        val open = Regex("^(?:please\\s+)?(?:open|opening|opened|launch|start|play|run)\\s+(?:the\\s+)?(.+)$").find(q)
         if (open != null) return openByName(open.groupValues[1].trim())
 
         return tryMath(q)
@@ -145,13 +145,18 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
         Regex("\\b(story|tale)\\b").containsMatchIn(q) &&
             Regex("^(tell|read|give|say|write|i want|i need|can you tell)").containsMatchIn(q)
 
+    private fun openApp(app: AppEntry) {
+        val custom = launcher
+        if (custom != null) custom(app) else viewModel.launch(app)
+    }
+
     private fun openByName(name: String): String {
         val n = name.lowercase()
         if (n.contains("developer")) {
             viewModel.openDeveloperSettings()
             return "Opening developer options."
         }
-        if (n == "settings" || n == "android settings") {
+        if (n == "settings" || n == "android settings" || similarity(squash(n), "settings") >= 0.8) {
             viewModel.openAndroidSettings()
             return "Opening Android Settings."
         }
@@ -165,15 +170,83 @@ class Assistant(private val context: Context, private val viewModel: LauncherVie
             }
 
         if (hit != null) {
-            val custom = launcher
-            if (custom != null) custom(hit) else viewModel.launch(hit)
+            openApp(hit)
             return "Opening ${hit.label}."
         }
         if (n.contains("youtube")) {
             viewModel.openYouTubeVr()
             return "Opening YouTube VR."
         }
+
+        // Didn't hear it exactly right? Open whichever app sounds closest.
+        val close = closestApp(n, apps)
+        if (close != null) {
+            openApp(close)
+            return "I heard \"$name\", so I'm opening ${close.label}."
+        }
         return "I couldn't find an app called \"$name\"."
+    }
+
+    // ---- "closest app" matching ----
+
+    private fun squash(s: String): String = s.lowercase().filter { it.isLetterOrDigit() }
+
+    /** Rough spelling-by-sound, so "beat saver" and "beat saber" look alike. */
+    private fun sound(s: String): String {
+        val t = squash(s)
+            .replace("ph", "f").replace("ck", "k").replace("c", "k").replace("q", "k")
+            .replace("z", "s").replace("x", "ks").replace("w", "v")
+        return Regex("(.)\\1+").replace(t, "\$1")
+    }
+
+    private fun editDistance(a: String, b: String): Int {
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            cur[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            val swap = prev
+            prev = cur
+            cur = swap
+        }
+        return prev[b.length]
+    }
+
+    private fun similarity(a: String, b: String): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        return 1.0 - editDistance(a, b).toDouble() / maxOf(a.length, b.length)
+    }
+
+    private fun matchScore(query: String, label: String): Double {
+        val whole = maxOf(
+            similarity(squash(query), squash(label)),
+            similarity(sound(query), sound(label)),
+        )
+        var word = 0.0
+        val qWords = query.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length >= 4 }
+        val lWords = label.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length >= 4 }
+        for (q in qWords) {
+            for (l in lWords) {
+                word = maxOf(word, similarity(sound(q), sound(l)))
+            }
+        }
+        return maxOf(whole, word * 0.85)
+    }
+
+    private fun closestApp(query: String, apps: List<AppEntry>): AppEntry? {
+        var best: AppEntry? = null
+        var bestScore = 0.0
+        for (a in apps) {
+            val s = matchScore(query, a.label)
+            if (s > bestScore) {
+                bestScore = s
+                best = a
+            }
+        }
+        return if (bestScore >= 0.5) best else null
     }
 
     // ---- math ----
