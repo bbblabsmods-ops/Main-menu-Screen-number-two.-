@@ -29,6 +29,7 @@ class Popup(private val context: Context) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val main = Handler(Looper.getMainLooper())
     private var view: TextView? = null
+    private var toast: Toast? = null
     private val hideRunnable = Runnable { remove() }
     private var channelMade = false
 
@@ -36,19 +37,26 @@ class Popup(private val context: Context) {
 
     fun allowed(): Boolean = Settings.canDrawOverlays(context)
 
-    fun show(text: String, millis: Long = 2500L) {
+    /** quiet = notification only (no toast), for "On it…" style updates. */
+    fun show(text: String, millis: Long = 2500L, quiet: Boolean = false) {
         when (mode()) {
             0 -> { }
             2 -> banner(text, millis)
-            else -> light(text)
+            else -> light(text, quiet)
         }
     }
 
-    private fun light(text: String) {
+    private fun light(text: String, quiet: Boolean) {
         main.post {
-            try {
-                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
+            if (!quiet) {
+                try {
+                    // Replace the previous toast right away instead of queueing behind it.
+                    toast?.cancel()
+                    val t = Toast.makeText(context, text, Toast.LENGTH_SHORT)
+                    toast = t
+                    t.show()
+                } catch (e: Exception) {
+                }
             }
             try {
                 val nm = context.getSystemService(NotificationManager::class.java)
@@ -63,7 +71,7 @@ class Popup(private val context: Context) {
                     .setContentText(text)
                     .setStyle(Notification.BigTextStyle().bigText(text))
                     .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                    .setTimeoutAfter(5000L)
+                    .setTimeoutAfter(6000L)
                     .setAutoCancel(true)
                     .build()
                 nm.notify(NOTE_ID, n)
@@ -76,7 +84,7 @@ class Popup(private val context: Context) {
         main.post {
             main.removeCallbacks(hideRunnable)
             if (!allowed()) {
-                light(text)
+                light(text, false)
                 return@post
             }
             try {
@@ -88,7 +96,7 @@ class Popup(private val context: Context) {
                 main.postDelayed(hideRunnable, minOf(millis, 3500L))
             } catch (e: Exception) {
                 view = null
-                light(text)
+                light(text, false)
             }
         }
     }
