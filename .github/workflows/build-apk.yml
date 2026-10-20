@@ -23,12 +23,14 @@ jobs:
         with:
           gradle-version: 8.9
 
-      - name: Add Gemini key to the app (optional)
+      - name: Add optional keys to the app
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
           mkdir -p app/src/main/assets
           printf '%s' "$GEMINI_API_KEY" > app/src/main/assets/gemini.txt
+          printf '%s' "$TAVILY_API_KEY" > app/src/main/assets/tavily.txt
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
