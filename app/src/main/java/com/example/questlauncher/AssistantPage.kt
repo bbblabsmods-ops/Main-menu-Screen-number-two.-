@@ -58,10 +58,12 @@ private val ChatDim = Color(0xFF9AA4B5)
 fun AssistantPage(viewModel: LauncherViewModel) {
     val context = LocalContext.current
     val assistant = remember { Assistant(context, viewModel) }
+    val brain = remember { Brain(context, viewModel, assistant) }
     val prefs = remember { context.getSharedPreferences("assistant", Context.MODE_PRIVATE) }
 
     val messages by AssistantHub.messages.collectAsState()
     val status by AssistantHub.status.collectAsState()
+    val listening by AssistantHub.listening.collectAsState()
 
     var input by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -69,15 +71,23 @@ fun AssistantPage(viewModel: LauncherViewModel) {
     var claudeKey by remember { mutableStateOf(assistant.apiKey()) }
     var geminiKey by remember { mutableStateOf(assistant.geminiKey()) }
     var geminiModel by remember { mutableStateOf(assistant.geminiModel()) }
+    var tavilyKey by remember { mutableStateOf(brain.tavilyKey()) }
     var wake by remember { mutableStateOf(assistant.wakeWord()) }
     var voiceOn by remember { mutableStateOf(assistant.voiceOn()) }
     var popupMode by remember { mutableStateOf(prefs.getInt("popup_mode", 1)) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    val builtInKey = remember {
+    val builtInGemini = remember {
         try {
             context.assets.open("gemini.txt").bufferedReader().use { it.readText() }.isNotBlank()
+        } catch (e: Exception) {
+            false
+        }
+    }
+    val builtInTavily = remember {
+        try {
+            context.assets.open("tavily.txt").bufferedReader().use { it.readText() }.isNotBlank()
         } catch (e: Exception) {
             false
         }
@@ -88,6 +98,11 @@ fun AssistantPage(viewModel: LauncherViewModel) {
 
     var micOk by remember { mutableStateOf(hasMic()) }
     var popupOk by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+
+    // Keeps the Mic button right even if you turn it off from the notification.
+    LaunchedEffect(listening) {
+        voiceOn = assistant.voiceOn()
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -113,7 +128,7 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         busy = true
         scope.launch {
             val answer = try {
-                assistant.reply(text, AssistantHub.messages.value)
+                brain.reply(text, AssistantHub.messages.value)
             } catch (e: Exception) {
                 "Something went wrong: ${e.message}"
             }
@@ -230,8 +245,8 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         ) {
             Text(
                 if (status.isNotEmpty()) status
-                else if (wake) "Say \"Hey BBB\" first. Turn on Mic to talk."
-                else "Wake word is off.",
+                else if (listening) "Waiting for \"Hey BBB\"…"
+                else "Turn on Mic to talk, or type below.",
                 color = ChatDim, fontSize = 13.sp, modifier = Modifier.weight(1f),
             )
             ChipButton(if (voiceOn) "Mic: On" else "Mic: Off", voiceOn) { toggleMic() }
@@ -253,7 +268,15 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    if (builtInKey) "A Gemini key is built into this app, so the AI should work without typing one."
+                    "Mic privacy: while Mic is on, BBB only listens for the phrase \"Hey BBB\" on the headset. " +
+                        "It can't turn other speech into words, and nothing is saved or sent. After you say it, " +
+                        "your command is turned into text on the headset, and only that text goes online, and " +
+                        "only if the command needs the AI or a search. Turn Mic off any time, here or from the " +
+                        "notification.",
+                    color = ChatDim, fontSize = 13.sp,
+                )
+                Text(
+                    if (builtInGemini) "A Gemini key is built into this app, so the AI should work without typing one."
                     else "Free AI: BBB tries a free AI that needs no key. If it is busy or slow, add a free " +
                         "Google Gemini key from aistudio.google.com/apikey. Free-tier requests may be " +
                         "used by Google to improve its products.",
@@ -276,6 +299,22 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                     colors = fieldColors,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text(
+                    if (builtInTavily) "A web search key is built into this app."
+                    else "Web search: add a free Tavily key from tavily.com (1,000 searches a month, no card) " +
+                        "so BBB can search the web. Without it, BBB answers from its AI's own knowledge, " +
+                        "which can be out of date.",
+                    color = ChatDim, fontSize = 13.sp,
+                )
+                OutlinedTextField(
+                    value = tavilyKey,
+                    onValueChange = { tavilyKey = it },
+                    label = { Text("Tavily search key (free)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 OutlinedTextField(
                     value = claudeKey,
                     onValueChange = { claudeKey = it },
@@ -290,13 +329,16 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                         assistant.saveGeminiKey(geminiKey)
                         assistant.saveGeminiModel(geminiModel)
                         assistant.saveApiKey(claudeKey)
+                        brain.saveTavilyKey(tavilyKey)
                         showSettings = false
                     }
                     ChipButton("Remove keys", false) {
                         geminiKey = ""
                         claudeKey = ""
+                        tavilyKey = ""
                         assistant.saveGeminiKey("")
                         assistant.saveApiKey("")
+                        brain.saveTavilyKey("")
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
