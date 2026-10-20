@@ -18,7 +18,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        seedGeminiKey()
+        seedKey("gemini.txt", "gemini_key")
+        seedKey("tavily.txt", "tavily_key")
         setContent {
             LauncherScreen(viewModel)
         }
@@ -73,13 +74,13 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    /** Copies the Gemini key built into this app (if any) so the AI works without typing it. */
-    private fun seedGeminiKey() {
+    /** Copies a key built into this app (if any) so it works without typing it. */
+    private fun seedKey(assetName: String, prefName: String) {
         try {
             val prefs = getSharedPreferences("assistant", MODE_PRIVATE)
-            if (prefs.getString("gemini_key", "").isNullOrEmpty()) {
-                val key = assets.open("gemini.txt").bufferedReader().use { it.readText() }.trim()
-                if (key.isNotEmpty()) prefs.edit().putString("gemini_key", key).apply()
+            if (prefs.getString(prefName, "").isNullOrEmpty()) {
+                val key = assets.open(assetName).bufferedReader().use { it.readText() }.trim()
+                if (key.isNotEmpty()) prefs.edit().putString(prefName, key).apply()
             }
         } catch (e: Exception) {
         }
