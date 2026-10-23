@@ -22,6 +22,7 @@ class VoiceService : Service() {
     private lateinit var assistant: Assistant
     private lateinit var brain: Brain
     private lateinit var speaker: Speaker
+    private lateinit var girl: GirlVoice
     private lateinit var beeper: Beeper
     private lateinit var popup: Popup
     private lateinit var listener: WakeListener
@@ -39,6 +40,7 @@ class VoiceService : Service() {
         assistant.launcher = { app -> launchApp(app) }
         brain = Brain(this, vm, assistant)
         speaker = Speaker(this)
+        girl = GirlVoice(this) { text -> speaker.speak(text) }
         beeper = Beeper()
         popup = Popup(this)
         listener = WakeListener(
@@ -71,6 +73,7 @@ class VoiceService : Service() {
 
     override fun onDestroy() {
         listener.stop()
+        girl.shutdown()
         speaker.shutdown()
         popup.remove()
         scope.cancel()
@@ -106,6 +109,7 @@ class VoiceService : Service() {
 
     /** The strict listener heard "hey b b b". */
     private fun onWake() {
+        girl.stop()
         beeper.wake()
         popup.show("Sup", 1500L)
         AssistantHub.setStatus("Listening…")
@@ -141,7 +145,7 @@ class VoiceService : Service() {
             AssistantHub.add(ChatMessage(false, answer))
             if (Brain.failed(answer)) beeper.fail() else beeper.ok()
             popup.show(answer, 3500L)
-            speaker.speak(answer)
+            girl.speak(answer)
             busy = false
         }
     }
