@@ -155,6 +155,30 @@ class AppRepository(private val context: Context) {
         runCatching { context.startActivity(intent) }
     }
 
+    /** Tries each screen in order and stops at the first one that opens. */
+    private fun startFirst(vararg intents: Intent): Boolean {
+        for (i in intents) {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { context.startActivity(i) }.isSuccess) return true
+        }
+        return false
+    }
+
+    /** The Android "App info" page for the Settings app (Open, Disable, Force stop, Permissions…). */
+    fun openSettingsAppInfo(): Boolean = startFirst(
+        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(android.net.Uri.parse("package:com.android.settings")),
+        Intent(android.provider.Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS),
+        Intent(android.provider.Settings.ACTION_SETTINGS),
+    )
+
+    /** Android's full list of apps. Tap any app there to get its App info page. */
+    fun openAllAppsList(): Boolean = startFirst(
+        Intent(android.provider.Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS),
+        Intent(android.provider.Settings.ACTION_APPLICATION_SETTINGS),
+        Intent(android.provider.Settings.ACTION_SETTINGS),
+    )
+
     fun openAndroidSettings(): Boolean = runCatching {
         context.startActivity(
             Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
