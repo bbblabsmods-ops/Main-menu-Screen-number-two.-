@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -20,8 +22,24 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         seedKey("gemini.txt", "gemini_key")
         seedKey("tavily.txt", "tavily_key")
+        seedKey("groq.txt", "groq_key")
         setContent {
             LauncherScreen(viewModel)
+        }
+        handleBoot(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleBoot(intent)
+    }
+
+    /** When the headset opened us at startup, let the listener start, then step out of the way. */
+    private fun handleBoot(intent: Intent?) {
+        if (intent?.getBooleanExtra("from_boot", false) == true) {
+            intent.removeExtra("from_boot")
+            Handler(Looper.getMainLooper()).postDelayed({ moveTaskToBack(true) }, 6000L)
         }
     }
 
