@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +55,20 @@ import kotlinx.coroutines.withContext
 
 private val ChatDim = Color(0xFF9AA4B5)
 
+private val Suggestions = listOf(
+    "What time is it",
+    "List my games",
+    "Close this game",
+    "Close all my games",
+    "Clear all my tabs",
+    "Volume up",
+    "Volume down",
+    "Take a screenshot",
+    "Go home",
+    "What is six plus six",
+    "Tell me a story",
+)
+
 @Composable
 fun AssistantPage(viewModel: LauncherViewModel) {
     val context = LocalContext.current
@@ -72,26 +87,23 @@ fun AssistantPage(viewModel: LauncherViewModel) {
     var geminiKey by remember { mutableStateOf(assistant.geminiKey()) }
     var geminiModel by remember { mutableStateOf(assistant.geminiModel()) }
     var tavilyKey by remember { mutableStateOf(brain.tavilyKey()) }
+    var groqKey by remember { mutableStateOf(brain.groqKey()) }
     var wake by remember { mutableStateOf(assistant.wakeWord()) }
     var voiceOn by remember { mutableStateOf(assistant.voiceOn()) }
+    var autostart by remember { mutableStateOf(prefs.getBoolean("autostart", false)) }
     var popupMode by remember { mutableStateOf(prefs.getInt("popup_mode", 1)) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    val builtInGemini = remember {
-        try {
-            context.assets.open("gemini.txt").bufferedReader().use { it.readText() }.isNotBlank()
-        } catch (e: Exception) {
-            false
-        }
+    fun hasAsset(name: String): Boolean = try {
+        context.assets.open(name).bufferedReader().use { it.readText() }.isNotBlank()
+    } catch (e: Exception) {
+        false
     }
-    val builtInTavily = remember {
-        try {
-            context.assets.open("tavily.txt").bufferedReader().use { it.readText() }.isNotBlank()
-        } catch (e: Exception) {
-            false
-        }
-    }
+
+    val builtInGemini = remember { hasAsset("gemini.txt") }
+    val builtInTavily = remember { hasAsset("tavily.txt") }
+    val builtInGroq = remember { hasAsset("groq.txt") }
 
     fun hasMic(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -120,10 +132,10 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         context.stopService(Intent(context, VoiceService::class.java))
     }
 
-    fun send() {
-        val text = input.trim()
+    fun send(raw: String? = null) {
+        val text = (raw ?: input).trim()
         if (text.isEmpty() || busy) return
-        input = ""
+        if (raw == null) input = ""
         AssistantHub.add(ChatMessage(true, text))
         busy = true
         scope.launch {
@@ -195,12 +207,12 @@ fun AssistantPage(viewModel: LauncherViewModel) {
         }
     }
 
-    // Only needed for the "Banner" style. Never opens a menu.
-    fun allowBanner() {
+    // Allows the overlay permission through Wireless debugging. Never opens a menu.
+    fun allowOverlay(onDone: (Boolean, Boolean) -> Unit) {
         scope.launch {
             val connected = withContext(Dispatchers.IO) {
                 val adb = AdbController(context)
-                if (adb.isConnected()) {
+                if (adb.isConnected() || adb.connect("127.0.0.1", null).isSuccess) {
                     adb.shell("appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
                     true
                 } else {
@@ -208,13 +220,34 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                 }
             }
             popupOk = Settings.canDrawOverlays(context)
-            if (popupOk) {
-                AssistantHub.setStatus("Banner allowed.")
-            } else if (!connected) {
-                AssistantHub.setStatus("Connect Wireless debugging in Tools first, then try again.")
-            } else {
-                AssistantHub.setStatus("The headset still says no. Try again in a moment.")
-            }
+            onDone(connected, popupOk)
+        }
+    }
+
+    fun allowBanner() {
+        allowOverlay { connected, ok ->
+            AssistantHub.setStatus(
+                if (ok) "Banner allowed."
+                else if (!connected) "Connect Wireless debugging in Tools first, then try again."
+                else "The headset still says no. Try again in a moment."
+            )
+        }
+    }
+
+    fun toggleAutostart() {
+        autostart = !autostart
+        prefs.edit().putBoolean("autostart", autostart).apply()
+        if (!autostart) {
+            AssistantHub.setStatus("Start on boot is off.")
+            return
+        }
+        AssistantHub.setStatus("Start on boot is on. Allowing it through Wireless debugging…")
+        allowOverlay { connected, ok ->
+            AssistantHub.setStatus(
+                if (ok) "Start on boot is on. BBB opens when the headset starts, listens, then steps back."
+                else if (!connected) "Start on boot is on, but it needs Wireless debugging once. Connect it in Tools, then tap this again."
+                else "Start on boot is on, but the headset didn't allow it to open from the background yet."
+            )
         }
     }
 
@@ -250,6 +283,7 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                 color = ChatDim, fontSize = 13.sp, modifier = Modifier.weight(1f),
             )
             ChipButton(if (voiceOn) "Mic: On" else "Mic: Off", voiceOn) { toggleMic() }
+            ChipButton(if (autostart) "Start on boot: On" else "Start on boot: Off", autostart) { toggleAutostart() }
             ChipButton("AI settings", false) {
                 showSettings = !showSettings
                 popupOk = Settings.canDrawOverlays(context)
@@ -300,6 +334,21 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
+                    if (builtInGroq) "A Groq key is built into this app, so questions are answered by Meta's Llama."
+                    else "Llama (Meta's open AI): add a free Groq key from console.groq.com so questions are " +
+                        "answered by Llama 3.3. Fast, and free without a card.",
+                    color = ChatDim, fontSize = 13.sp,
+                )
+                OutlinedTextField(
+                    value = groqKey,
+                    onValueChange = { groqKey = it },
+                    label = { Text("Groq key for Llama (free)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
                     if (builtInTavily) "A web search key is built into this app."
                     else "Web search: add a free Tavily key from tavily.com (1,000 searches a month, no card) " +
                         "so BBB can search the web. Without it, BBB answers from its AI's own knowledge, " +
@@ -330,15 +379,18 @@ fun AssistantPage(viewModel: LauncherViewModel) {
                         assistant.saveGeminiModel(geminiModel)
                         assistant.saveApiKey(claudeKey)
                         brain.saveTavilyKey(tavilyKey)
+                        brain.saveGroqKey(groqKey)
                         showSettings = false
                     }
                     ChipButton("Remove keys", false) {
                         geminiKey = ""
                         claudeKey = ""
                         tavilyKey = ""
+                        groqKey = ""
                         assistant.saveGeminiKey("")
                         assistant.saveApiKey("")
                         brain.saveTavilyKey("")
+                        brain.saveGroqKey("")
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -384,6 +436,15 @@ fun AssistantPage(viewModel: LauncherViewModel) {
             items(messages.size) { i -> Bubble(messages[i]) }
             if (busy) {
                 item { Text("Thinking…", color = ChatDim, fontSize = 14.sp) }
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for (s in Suggestions) {
+                ChipButton(s, false) { send(s) }
             }
         }
 
