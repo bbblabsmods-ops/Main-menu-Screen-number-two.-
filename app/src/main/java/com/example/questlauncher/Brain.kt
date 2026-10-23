@@ -3,13 +3,14 @@ package com.example.questlauncher
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Handles the commands that control the headset (close games, list games) and web questions,
- * then hands everything else (open an app, time, math, stories, AI) to the Assistant.
+ * Handles the commands that control the headset (close games, volume, screenshot, list games),
+ * web and Llama questions, then hands everything else (open an app, time, math, stories) to the Assistant.
  */
 class Brain(
     private val context: Context,
@@ -22,6 +23,11 @@ class Brain(
     fun tavilyKey(): String = prefs.getString("tavily_key", "") ?: ""
     fun saveTavilyKey(key: String) {
         prefs.edit().putString("tavily_key", key.trim()).apply()
+    }
+
+    fun groqKey(): String = prefs.getString("groq_key", "") ?: ""
+    fun saveGroqKey(key: String) {
+        prefs.edit().putString("groq_key", key.trim()).apply()
     }
 
     private val wakeRegex = Regex(
@@ -45,6 +51,8 @@ class Brain(
         "^(?:please\\s+)?(?:close|quit|exit|kill|shut down|force close|force stop)\\s+(?:the\\s+)?(.+)$"
     )
     private val openAllRe = Regex("^(?:please\\s+)?(?:open|launch|start|play|run)\\s+(?:all|every|everything)\\b.*$")
+    private val screenshotRe = Regex("^(?:please\\s+)?(?:take\\s+(?:a\\s+)?)?(?:screenshot|screen shot|screen capture|capture (?:the )?screen)\\b.*$")
+    private val homeRe = Regex("^(?:please\\s+)?(?:go\\s+(?:to\\s+)?(?:the\\s+)?home(?:\\s+screen)?|take me home|home screen|home)$")
 
     private val questionRe = Regex(
         "^(?:who|what|whats|what's|when|where|why|how|which|is|are|was|were|does|do|did|can|could|will|" +
@@ -71,6 +79,8 @@ class Brain(
         if (questionRe.containsMatchIn(q) && !localRe.containsMatchIn(q)) {
             val web = webAnswer(q)
             if (web != null) return web
+            val llama = askLlama(q)
+            if (llama != null) return llama
         }
         return assistant.reply(input, history)
     }
@@ -98,7 +108,48 @@ class Brain(
                 "Say \"open\" and a game's name, or say \"list my games\"."
         }
         if (isListQuestion(q)) return listApps(q)
+
+        val volume = volumeDirection(q)
+        if (volume != 0) return changeVolume(volume > 0)
+        if (screenshotRe.matches(q)) return screenshot()
+        if (homeRe.matches(q)) return goHome()
         return null
+    }
+
+    private fun volumeDirection(q: String): Int {
+        if (questionRe.containsMatchIn(q)) return 0
+        val about = q.contains("volume") || q == "louder" || q == "quieter" || q == "softer" ||
+            q == "turn it up" || q == "turn it down" || q == "turn up" || q == "turn down"
+        if (!about) return 0
+        val up = q.contains("up") || q.contains("louder") || q.contains("raise") || q.contains("increase")
+        val down = q.contains("down") || q.contains("quieter") || q.contains("softer") ||
+            q.contains("lower") || q.contains("decrease")
+        return if (up == down) 0 else if (up) 1 else -1
+    }
+
+    private suspend fun changeVolume(up: Boolean): String = withContext(Dispatchers.IO) {
+        val adb = adb() ?: return@withContext NO_ADB
+        val key = if (up) 24 else 25
+        adb.shell("input keyevent $key; input keyevent $key; input keyevent $key")
+        if (up) "Volume up." else "Volume down."
+    }
+
+    private suspend fun screenshot(): String = withContext(Dispatchers.IO) {
+        val adb = adb() ?: return@withContext NO_ADB
+        val name = "bbb_" + System.currentTimeMillis() + ".png"
+        val path = "/sdcard/Oculus/Screenshots/$name"
+        val out = adb.shell("mkdir -p /sdcard/Oculus/Screenshots; screencap -p $path; ls -l $path").getOrNull() ?: ""
+        if (out.contains(name) && !out.contains("No such file")) {
+            "Screenshot saved to your Screenshots folder."
+        } else {
+            "I couldn't take a screenshot. Quest may block it from here."
+        }
+    }
+
+    private suspend fun goHome(): String = withContext(Dispatchers.IO) {
+        val adb = adb() ?: return@withContext NO_ADB
+        adb.shell("input keyevent 3")
+        "Going home."
     }
 
     private fun isListQuestion(q: String): Boolean =
@@ -262,8 +313,9 @@ class Brain(
         return if (bestScore >= 0.5) best else null
     }
 
-    // ---- searching the web (needs the free Tavily key) ----
+    // ---- answering questions ----
 
+    /** Live web search through Tavily (free key). */
     private suspend fun webAnswer(question: String): String? = withContext(Dispatchers.IO) {
         val key = tavilyKey()
         if (key.isEmpty()) return@withContext null
@@ -299,6 +351,50 @@ class Brain(
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** Meta's open Llama models, run for free on Groq (free key). */
+    private suspend fun askLlama(question: String): String? = withContext(Dispatchers.IO) {
+        val key = groqKey()
+        if (key.isEmpty()) return@withContext null
+        for (model in listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant")) {
+            try {
+                val messages = JSONArray()
+                    .put(
+                        JSONObject().put("role", "system").put(
+                            "content",
+                            "You are BBB, a voice assistant on a Meta Quest headset. Answer in one to three short " +
+                                "sentences of plain text with no markdown. If you aren't sure, or it needs live " +
+                                "information you don't have, say so briefly."
+                        )
+                    )
+                    .put(JSONObject().put("role", "user").put("content", question))
+                val body = JSONObject()
+                    .put("model", model)
+                    .put("messages", messages)
+                    .put("max_tokens", 220)
+                    .put("temperature", 0.4)
+                val c = URL("https://api.groq.com/openai/v1/chat/completions").openConnection() as HttpURLConnection
+                c.requestMethod = "POST"
+                c.connectTimeout = 8000
+                c.readTimeout = 20000
+                c.setRequestProperty("Authorization", "Bearer $key")
+                c.setRequestProperty("Content-Type", "application/json")
+                c.doOutput = true
+                c.outputStream.use { it.write(body.toString().toByteArray()) }
+                val code = c.responseCode
+                val stream = if (code in 200..299) c.inputStream else c.errorStream
+                val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                c.disconnect()
+                if (code in 200..299) {
+                    val answer = JSONObject(text).getJSONArray("choices").getJSONObject(0)
+                        .getJSONObject("message").optString("content").trim()
+                    if (answer.isNotEmpty()) return@withContext shorten(answer)
+                }
+            } catch (e: Exception) {
+            }
+        }
+        null
     }
 
     private fun shorten(text: String): String {
