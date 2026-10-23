@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiOff
@@ -142,6 +144,7 @@ private enum class Page(val title: String, val icon: ImageVector) {
 fun LauncherScreen(viewModel: LauncherViewModel) {
     val context = LocalContext.current
     val tileColors = remember { TileColors(context) }
+    val settingsRepo = remember { AppRepository(context) }
 
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
@@ -260,6 +263,9 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
+                        if (page == Page.APPS && (query.isBlank() || "settings".contains(query.trim(), ignoreCase = true))) {
+                            item(key = "bbb_settings_tile") { SettingsCell(settingsRepo) }
+                        }
                         items(visible, key = { it.packageName }) { app ->
                             AppCell(app = app, viewModel = viewModel, tileColors = tileColors)
                         }
@@ -389,6 +395,74 @@ private fun StatusInfo() {
         Spacer(Modifier.width(8.dp))
         Icon(Icons.Default.BatteryChargingFull, null, tint = Color(0xFF3DDC84), modifier = Modifier.size(17.dp))
         Text("$battery%", color = Dim, fontSize = 12.sp)
+    }
+}
+
+/**
+ * The Settings tile in the Apps tab.
+ * Tap: Android's App info page for Settings. Long-press: more Android screens.
+ */
+@Composable
+private fun SettingsCell(repo: AppRepository) {
+    val context = LocalContext.current
+    var menu by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(22.dp)
+
+    fun report(ok: Boolean) {
+        if (!ok) Toast.makeText(context, "Couldn't open that screen", Toast.LENGTH_SHORT).show()
+    }
+
+    Box {
+        Column(
+            Modifier
+                .hoverLift(1.08f)
+                .fillMaxWidth()
+                .clip(shape)
+                .background(Color(0x12FFFFFF))
+                .border(1.dp, GlassEdge, shape)
+                .combinedClickable(
+                    onClick = { report(repo.openSettingsAppInfo()) },
+                    onLongClick = { menu = true },
+                )
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                Modifier.size(76.dp).clip(RoundedCornerShape(19.dp)).background(AccentGradient),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.Settings, "Settings", tint = Color.White, modifier = Modifier.size(44.dp))
+            }
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "Settings",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text("App info (Settings)") },
+                onClick = { menu = false; report(repo.openSettingsAppInfo()) },
+            )
+            DropdownMenuItem(
+                text = { Text("Android Settings") },
+                onClick = { menu = false; report(repo.openAndroidSettings()) },
+            )
+            DropdownMenuItem(
+                text = { Text("All apps list") },
+                onClick = { menu = false; report(repo.openAllAppsList()) },
+            )
+            DropdownMenuItem(
+                text = { Text("Developer options") },
+                onClick = { menu = false; report(repo.openDeveloperSettings()) },
+            )
+        }
     }
 }
 
