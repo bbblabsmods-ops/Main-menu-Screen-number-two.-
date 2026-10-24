@@ -1,232 +1,391 @@
 package com.example.questlauncher
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.pm.ApplicationInfo
-import android.graphics.Bitmap
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.graphics.drawable.toBitmap
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import org.json.JSONArray
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
 
-enum class LauncherTab(val title: String, val wide: Boolean) {
-    GAMES("Games", wide = true),
-    APPS("Apps", wide = false),
-}
+/**
+ * Listens on the headset, but in two stages so it only understands you after "Hey BBB":
+ *  1. A strict listener that can only recognise "hey b b b". It writes everything else as
+ *     "unknown", so it cannot turn your other speech into words.
+ *  2. After the wake phrase, a normal listener turns your command into text for a few seconds.
+ * About 1.5 seconds of sound is kept in memory (never saved) so the start of your sentence
+ * isn't lost when you say "Hey BBB open Gorilla Tag" in one breath.
+ * If the microphone drops for any reason, listening restarts by itself.
+ */
+class WakeListener(
+    private val context: Context,
+    private val onStatus: (String) -> Unit,
+    private val onWake: () -> Unit,
+    private val onCommand: (String) -> Unit,
+    private val onGiveUp: () -> Unit,
+) {
 
-data class AppEntry(
-    val packageName: String,
-    val activityName: String,
-    val label: String,
-    val labelJunk: Boolean,
-    val icon: ImageBitmap,
-    val iconBlank: Boolean,
-    val tab: LauncherTab,
-    val installTime: Long,
-)
+    private val modelName = "vosk-model-small-en-us-0.15"
+    private val modelUrl = "https://alphacephei.com/vosk/models/$modelName.zip"
+    private val modelDir: File get() = File(context.filesDir, modelName)
+    private val main = Handler(Looper.getMainLooper())
 
-class AppRepository(private val context: Context) {
+    @Volatile private var model: Model? = null
+    @Volatile private var wanted = false
+    @Volatile private var worker: Thread? = null
 
-    private val prefs = context.getSharedPreferences("launcher", Context.MODE_PRIVATE)
+    // Only used by the listening thread.
+    private var window = false
+    private var windowEnd = 0L
+    private var lastPartial = ""
+    private var lastChange = 0L
+    private val ring = ShortArray(RATE * 3 / 2)
+    private var ringPos = 0
+    private var ringFilled = 0
 
-    private companion object {
-        const val VR_CATEGORY = "com.oculus.intent.category.VR"
-        const val KEY_FORCE_GAMES = "force_games"
-        const val KEY_FORCE_APPS = "force_apps"
-        const val KEY_HIDDEN = "hidden"
-
-        val SYSTEM_PREFIXES = listOf(
-            "com.oculus.os.",
-            "com.oculus.ossplash",
-            "com.oculus.shellenv",
-            "com.oculus.systemux",
-            "com.oculus.voidactivity",
-            "com.oculus.vrshell",
-        )
+    private fun say(text: String) {
+        main.post { onStatus(text) }
     }
 
-    fun hiddenCount(): Int = hidden().size
-
-    private fun hidden(): Set<String> = prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet()
-
-    fun hide(app: AppEntry) {
-        prefs.edit().putStringSet(KEY_HIDDEN, hidden() + app.packageName).apply()
-    }
-
-    fun unhideAll() {
-        prefs.edit().putStringSet(KEY_HIDDEN, emptySet()).apply()
-    }
-
-    fun load(): List<AppEntry> {
-        val pm = context.packageManager
-        val forceGames = prefs.getStringSet(KEY_FORCE_GAMES, emptySet()) ?: emptySet()
-        val forceApps = prefs.getStringSet(KEY_FORCE_APPS, emptySet()) ?: emptySet()
-        val hidden = hidden()
-
-        val vrIntent = Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY)
-        val vrPackages = pm.queryIntentActivities(vrIntent, 0).map { it.activityInfo.packageName }.toSet()
-
-        val launchables = pm.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
-        ) + pm.queryIntentActivities(vrIntent, 0)
-
-        val seen = HashSet<String>()
-        val result = ArrayList<AppEntry>()
-
-        for (ri in launchables) {
-            val info = ri.activityInfo
-            val pkg = info.packageName
-            if (pkg == context.packageName) continue
-            if (SYSTEM_PREFIXES.any { pkg.startsWith(it) }) continue
-            if (pkg in hidden) continue
-            if (!seen.add(pkg)) continue
-
-            val appInfo = info.applicationInfo
-            val autoGame = pkg in vrPackages ||
-                (appInfo.flags and ApplicationInfo.FLAG_IS_GAME) != 0 ||
-                appInfo.category == ApplicationInfo.CATEGORY_GAME
-            val isGame = when {
-                pkg in forceGames -> true
-                pkg in forceApps -> false
-                else -> autoGame
+    fun start() {
+        wanted = true
+        val w = worker
+        if (w != null && w.isAlive) return
+        val t = Thread {
+            var wait = 2000L
+            while (wanted) {
+                val began = SystemClock.elapsedRealtime()
+                listen()
+                if (!wanted) break
+                // It ended because of a problem. Try again, waiting a little longer each time.
+                if (SystemClock.elapsedRealtime() - began > 30000L) wait = 2000L
+                try {
+                    Thread.sleep(wait)
+                } catch (e: InterruptedException) {
+                }
+                wait = minOf(wait * 2, 15000L)
             }
-
-            val bitmap = runCatching { ri.loadIcon(pm).toBitmap(256, 256) }.getOrNull()
-            val blank = bitmap == null || isBlank(bitmap)
-            val iconBitmap = (bitmap ?: Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)).asImageBitmap()
-
-            val rawLabel = runCatching { ri.loadLabel(pm).toString() }.getOrDefault("")
-            val junk = rawLabel.isBlank() || rawLabel == pkg || (rawLabel.contains('.') && !rawLabel.contains(' '))
-
-            val installTime = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
-
-            result += AppEntry(
-                packageName = pkg,
-                activityName = info.name,
-                label = if (junk) fallbackName(pkg) else rawLabel,
-                labelJunk = junk,
-                icon = iconBitmap,
-                iconBlank = blank,
-                tab = if (isGame) LauncherTab.GAMES else LauncherTab.APPS,
-                installTime = installTime,
-            )
         }
-        return result
+        worker = t
+        t.start()
     }
 
-    private fun fallbackName(pkg: String): String =
-        pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+    fun stop() {
+        wanted = false
+    }
 
-    /**
-     * True when the icon is empty, a single flat colour (what Quest gives us for most games),
-     * or almost completely see-through, so a coloured letter tile is shown instead of nothing.
-     */
-    private fun isBlank(b: Bitmap): Boolean {
-        val w = b.width
-        val h = b.height
-        var first: Int? = null
-        var visible = 0
-        var total = 0
-        var differs = false
-        for (y in 0 until h step 16) {
-            for (x in 0 until w step 16) {
-                total++
-                val p = b.getPixel(x, y)
-                if ((p ushr 24) > 20) visible++
-                if (first == null) {
-                    first = p
-                } else if (!differs && p != first) {
-                    val dr = Math.abs(((p shr 16) and 255) - ((first shr 16) and 255))
-                    val dg = Math.abs(((p shr 8) and 255) - ((first shr 8) and 255))
-                    val db = Math.abs((p and 255) - (first and 255))
-                    if (dr + dg + db > 24) differs = true
+    private fun wakeGrammar(): String {
+        val sounds = listOf("b", "be", "bee")
+        val list = JSONArray()
+        for (hey in listOf("hey", "okay")) {
+            for (x in sounds) {
+                for (y in sounds) {
+                    for (z in sounds) {
+                        list.put("$hey $x $y $z")
+                    }
                 }
             }
         }
-        if (total == 0) return true
-        // Fewer than 15% of the sampled points have any colour: the icon is basically invisible.
-        if (visible * 100 < total * 15) return true
-        return !differs
+        list.put("[unk]")
+        return list.toString()
     }
 
-    fun launch(app: AppEntry) {
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            component = ComponentName(app.packageName, app.activityName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+    private fun isWake(text: String?): Boolean {
+        if (text == null) return false
+        val t = text.split(" ").filter { it.isNotEmpty() }
+        if (t.size < 3) return false
+        if (t[0] != "hey" && t[0] != "okay") return false
+        var b = 0
+        for (i in 1 until t.size) {
+            if (t[i] == "b" || t[i] == "be" || t[i] == "bee") b++ else break
         }
-        runCatching { context.startActivity(intent) }
+        return b >= 2
     }
 
-    fun openAppInfo(app: AppEntry) {
-        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = android.net.Uri.parse("package:${app.packageName}")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    /** Everything after "hey bbb", however the speech engine wrote it. */
+    private fun afterWake(text: String): String {
+        val t = text.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        for (i in t.indices) {
+            if (t[i] !in HEY_STRICT) continue
+            var j = i + 1
+            var b = 0
+            while (j < t.size && b < 5 && t[j] in BS) {
+                j++
+                b++
+            }
+            if (b >= 2 || (b == 1 && t[i + 1] in BIG_B)) return t.drop(j).joinToString(" ")
         }
-        runCatching { context.startActivity(intent) }
-    }
-
-    /** Tries each screen in order and stops at the first one that opens. */
-    private fun startFirst(vararg intents: Intent): Boolean {
-        for (i in intents) {
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (runCatching { context.startActivity(i) }.isSuccess) return true
+        // The words look different, but the strict listener did hear the wake phrase.
+        var i = 0
+        if (i < t.size && t[i] in HEY_LOOSE) i++
+        var b = 0
+        while (i < t.size && b < 5 && t[i] in BS) {
+            i++
+            b++
         }
-        return false
+        return t.drop(i).joinToString(" ")
     }
 
-    /** The Android "App info" page for the Settings app (Open, Disable, Force stop, Permissions…). */
-    fun openSettingsAppInfo(): Boolean = startFirst(
-        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-            .setData(android.net.Uri.parse("package:com.android.settings")),
-        Intent(android.provider.Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS),
-        Intent(android.provider.Settings.ACTION_SETTINGS),
-    )
+    private fun openMic(): AudioRecord {
+        val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val size = maxOf(minBuf, RATE * 2)
+        for (source in intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC)) {
+            try {
+                val r = AudioRecord(source, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size)
+                if (r.state == AudioRecord.STATE_INITIALIZED) return r
+                r.release()
+            } catch (e: Exception) {
+            }
+        }
+        throw IllegalStateException("The microphone couldn't start. Another app may be using it, or the permission is missing.")
+    }
 
-    /** Android's full list of apps. Tap any app there to get its App info page. */
-    fun openAllAppsList(): Boolean = startFirst(
-        Intent(android.provider.Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS),
-        Intent(android.provider.Settings.ACTION_APPLICATION_SETTINGS),
-        Intent(android.provider.Settings.ACTION_SETTINGS),
-    )
+    private fun ringWrite(buf: ShortArray, n: Int) {
+        for (i in 0 until n) {
+            ring[ringPos] = buf[i]
+            ringPos = (ringPos + 1) % ring.size
+        }
+        ringFilled = minOf(ring.size, ringFilled + n)
+    }
 
-    fun openAndroidSettings(): Boolean = runCatching {
-        context.startActivity(
-            Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-    }.isSuccess
+    private fun ringSnapshot(): ShortArray {
+        val out = ShortArray(ringFilled)
+        var p = (ringPos - ringFilled + ring.size) % ring.size
+        for (i in 0 until ringFilled) {
+            out[i] = ring[p]
+            p = (p + 1) % ring.size
+        }
+        return out
+    }
 
-    fun openDeveloperSettings(): Boolean = runCatching {
-        context.startActivity(
-            Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-    }.isSuccess
+    private fun listen() {
+        var record: AudioRecord? = null
+        var full: Recognizer? = null
+        var spotter: Recognizer? = null
+        try {
+            ensureModel()
+            val m = model ?: Model(modelDir.absolutePath).also { model = it }
+            val f = Recognizer(m, RATE.toFloat())
+            full = f
+            val s = Recognizer(m, RATE.toFloat(), wakeGrammar())
+            spotter = s
 
-    fun openPackage(pkg: String): Boolean {
-        val pm = context.packageManager
-        val intent = pm.getLaunchIntentForPackage(pkg)
-            ?: pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(VR_CATEGORY), 0)
-                .firstOrNull { it.activityInfo.packageName == pkg }
-                ?.let {
-                    Intent(Intent.ACTION_MAIN).setComponent(
-                        ComponentName(it.activityInfo.packageName, it.activityInfo.name)
-                    )
+            val r = openMic()
+            record = r
+            r.startRecording()
+            say("Waiting for \"Hey BBB\"…")
+
+            window = false
+            lastPartial = ""
+            ringPos = 0
+            ringFilled = 0
+
+            val buf = ShortArray(800)
+            var wakeFired = false
+            var emptyReads = 0
+
+            while (wanted) {
+                val n = r.read(buf, 0, buf.size)
+                if (n < 0) throw IllegalStateException("The microphone stopped (error $n).")
+                if (n == 0) {
+                    // Some headsets return nothing while another app holds the mic. Don't spin forever.
+                    emptyReads++
+                    if (emptyReads > 400) throw IllegalStateException("The microphone gave no sound.")
+                    Thread.sleep(10)
+                    continue
                 }
-            ?: return false
-        return runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
+                emptyReads = 0
+                val now = SystemClock.elapsedRealtime()
+                ringWrite(buf, n)
+
+                // Stage 1: only "hey b b b". Always on.
+                val spotDone = s.acceptWaveForm(buf, n)
+                val spotText = if (spotDone) textOf(s.getResult()) else partialOf(s.getPartialResult())
+                var justOpened = false
+                if (!wakeFired && isWake(spotText)) {
+                    wakeFired = true
+                    if (!window) {
+                        main.post { onWake() }
+                        openWindow(f, now)
+                        justOpened = true
+                    }
+                }
+                if (spotDone) wakeFired = false
+
+                // Stage 2: your command. Only runs after the wake phrase.
+                if (window && !justOpened) feedFull(f, buf, n, now)
+
+                if (window && now > windowEnd) {
+                    window = false
+                    f.reset()
+                    lastPartial = ""
+                    main.post { onGiveUp() }
+                    say("Waiting for \"Hey BBB\"…")
+                }
+            }
+        } catch (e: Exception) {
+            say("Voice problem: " + (e.message ?: e.javaClass.simpleName) + ". Trying again…")
+        } finally {
+            try {
+                record?.stop()
+            } catch (e: Exception) {
+            }
+            try {
+                record?.release()
+            } catch (e: Exception) {
+            }
+            try {
+                full?.close()
+            } catch (e: Exception) {
+            }
+            try {
+                spotter?.close()
+            } catch (e: Exception) {
+            }
+        }
     }
 
-    fun moveTo(app: AppEntry, tab: LauncherTab) {
-        val games = (prefs.getStringSet(KEY_FORCE_GAMES, emptySet()) ?: emptySet()).toMutableSet()
-        val apps = (prefs.getStringSet(KEY_FORCE_APPS, emptySet()) ?: emptySet()).toMutableSet()
-        games.remove(app.packageName)
-        apps.remove(app.packageName)
-        if (tab == LauncherTab.GAMES) games.add(app.packageName) else apps.add(app.packageName)
-        prefs.edit().putStringSet(KEY_FORCE_GAMES, games).putStringSet(KEY_FORCE_APPS, apps).apply()
+    /** Starts the command listener and gives it the last moment of sound so nothing is missed. */
+    private fun openWindow(f: Recognizer, now: Long) {
+        f.reset()
+        lastPartial = ""
+        lastChange = now
+        windowEnd = now + 12000L
+        window = true
+        val snap = ringSnapshot()
+        val chunk = ShortArray(800)
+        var i = 0
+        while (i < snap.size) {
+            val len = minOf(800, snap.size - i)
+            System.arraycopy(snap, i, chunk, 0, len)
+            feedFull(f, chunk, len, now)
+            i += len
+            if (!window) break
+        }
     }
 
-    /** Quest normally refuses this without ADB; the screen then shows the command to copy. */
-    fun setRefreshRate(hz: Int): Boolean = runCatching {
-        Runtime.getRuntime().exec(arrayOf("setprop", "debug.oculus.refreshRate", hz.toString())).waitFor() == 0
-    }.getOrDefault(false)
+    private fun feedFull(f: Recognizer, buf: ShortArray, n: Int, now: Long) {
+        var text: String? = null
+        if (f.acceptWaveForm(buf, n)) {
+            lastPartial = ""
+            text = textOf(f.getResult())
+        } else {
+            val p = partialOf(f.getPartialResult()) ?: ""
+            if (p != lastPartial) {
+                lastPartial = p
+                lastChange = now
+            } else if (p.isNotEmpty() && now - lastChange >= STABLE_MS) {
+                // The words stopped changing, so you're done. Don't wait for the slower timer.
+                text = textOf(f.getFinalResult())
+                f.reset()
+                lastPartial = ""
+            }
+        }
+        if (text != null) handleText(f, text, now)
+    }
+
+    private fun handleText(f: Recognizer, text: String, now: Long) {
+        val cmd = afterWake(text)
+        if (cmd.isNotBlank()) {
+            window = false
+            f.reset()
+            lastPartial = ""
+            main.post { onCommand(cmd) }
+        } else {
+            // Only the wake phrase so far. Keep waiting for the command.
+            windowEnd = now + 8000L
+        }
+    }
+
+    private fun ensureModel() {
+        val dir = modelDir
+        if (File(dir, "am").exists()) return
+
+        say("Downloading voice model (40 MB, one time)…")
+        val zip = File(context.cacheDir, "$modelName.zip")
+        val c = URL(modelUrl).openConnection() as HttpURLConnection
+        c.connectTimeout = 15000
+        c.readTimeout = 30000
+        if (c.responseCode != 200) throw IllegalStateException("Download failed (${c.responseCode})")
+        val total = c.contentLength.toLong()
+        c.inputStream.use { input ->
+            zip.outputStream().use { out ->
+                val buf = ByteArray(65536)
+                var done = 0L
+                var last = 0
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    if (total > 0) {
+                        val p = (done * 100 / total).toInt()
+                        if (p >= last + 10) {
+                            last = p
+                            say("Downloading voice model… $p%")
+                        }
+                    }
+                }
+            }
+        }
+        c.disconnect()
+
+        say("Unpacking voice model…")
+        val root = context.filesDir.canonicalFile
+        ZipInputStream(zip.inputStream().buffered()).use { zin ->
+            var entry = zin.nextEntry
+            while (entry != null) {
+                val target = File(root, entry.name).canonicalFile
+                if (!target.path.startsWith(root.path + File.separator)) throw SecurityException("bad zip")
+                if (entry.isDirectory) {
+                    target.mkdirs()
+                } else {
+                    target.parentFile?.mkdirs()
+                    target.outputStream().use { zin.copyTo(it) }
+                }
+                entry = zin.nextEntry
+            }
+        }
+        zip.delete()
+        if (!File(dir, "am").exists()) throw IllegalStateException("Voice model looks incomplete")
+    }
+
+    private fun textOf(json: String?): String? {
+        if (json == null) return null
+        return try {
+            JSONObject(json).optString("text").trim().ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun partialOf(json: String?): String? {
+        if (json == null) return null
+        return try {
+            JSONObject(json).optString("partial").trim().ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    companion object {
+        private const val RATE = 16000
+        private const val STABLE_MS = 450L
+
+        private val HEY_STRICT = setOf("hey", "hay", "okay", "ok", "hi", "hello", "they", "ay")
+        private val HEY_LOOSE = setOf("hey", "hay", "hi", "he", "a", "okay", "ok", "hello", "they", "ay")
+        private val BIG_B = setOf("bbb", "bbc", "bb")
+        private val BS = setOf(
+            "b", "be", "bee", "bi", "bb", "bbb", "bbc", "bc", "d", "dee", "p", "pea",
+            "v", "vee", "by", "bye", "buy", "bay", "been", "bean",
+        )
+    }
 }
