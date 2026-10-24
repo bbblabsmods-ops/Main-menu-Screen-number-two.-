@@ -1,10 +1,13 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.meta.spatial.plugin")
 }
+
+// Turns the assistant files on or off. Change it in assistant-switch.gradle.kts.
+apply(from = "assistant-switch.gradle.kts")
+val assistantOn = extra["assistantOn"] as Boolean
 
 android {
     namespace = "com.example.questlauncher"
@@ -79,4 +82,10 @@ dependencies {
     implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
     implementation("org.bouncycastle:bcprov-jdk15to18:1.81")
     implementation("org.bouncycastle:bcpkix-jdk15to18:1.81")
+
+    // Offline voice for the assistant. Only added when the assistant switch is on.
+    if (assistantOn) {
+        implementation("com.alphacephei:vosk-android:0.3.75")
+        implementation("net.java.dev.jna:jna:5.18.1@aar")
+    }
 }
