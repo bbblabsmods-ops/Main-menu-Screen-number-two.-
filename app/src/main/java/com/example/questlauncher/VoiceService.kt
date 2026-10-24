@@ -8,9 +8,12 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.IBinder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -28,7 +31,8 @@ class VoiceService : Service() {
     private lateinit var listener: WakeListener
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var busy = false
+    private var job: Job? = null
+    private var generation = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -125,28 +129,45 @@ class VoiceService : Service() {
     private fun onGiveUp() {
         beeper.fail()
         popup.show("I didn't catch that", 2500L)
+        girl.speak("I didn't catch that")
     }
 
+    /**
+     * A new command always replaces the one before it, so a slow or stuck answer can never block
+     * you. An answer for a command you've already replaced is thrown away.
+     */
     private fun handle(text: String) {
-        if (busy) {
-            AssistantHub.setStatus("Still working on the last one…")
-            return
-        }
-        busy = true
+        val mine = ++generation
+        job?.cancel()
+        girl.stop()
         AssistantHub.add(ChatMessage(true, text))
         popup.show("On it…", 1500L, true)
-        scope.launch {
+
+        job = scope.launch {
+            val work = async {
+                try {
+                    brain.reply(text, AssistantHub.messages.value)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    "Something went wrong: ${e.message}"
+                }
+            }
             val answer = try {
-                withTimeoutOrNull(25000L) { brain.reply(text, AssistantHub.messages.value) }
-                    ?: "That took too long. Try again."
+                // await() can be abandoned on time-out, even if the request itself is still stuck.
+                withTimeoutOrNull(20000L) { work.await() } ?: "That took too long. Try again."
+            } catch (e: CancellationException) {
+                work.cancel()
+                throw e
             } catch (e: Exception) {
                 "Something went wrong: ${e.message}"
             }
+            work.cancel()
+            if (mine != generation) return@launch
+
             AssistantHub.add(ChatMessage(false, answer))
             if (Brain.failed(answer)) beeper.fail() else beeper.ok()
             popup.show(answer, 3500L)
             girl.speak(answer)
-            busy = false
         }
     }
 
