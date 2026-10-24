@@ -41,7 +41,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Palette
@@ -60,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -87,7 +87,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -137,7 +136,6 @@ private enum class Page(val title: String, val icon: ImageVector) {
     APPS("Apps", Icons.Default.Apps),
     TOOLS("Tools", Icons.Default.Build),
     COLORS("Colors", Icons.Default.Palette),
-    ASSISTANT("Assistant", Icons.Default.AutoAwesome),
 }
 
 @Composable
@@ -146,9 +144,9 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
     val tileColors = remember { TileColors(context) }
     val settingsRepo = remember { AppRepository(context) }
 
-    val apps by viewModel.apps.collectAsStateWithLifecycle()
-    val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
-    val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
+    val apps by viewModel.apps.collectAsState()
+    val hiddenCount by viewModel.hiddenCount.collectAsState()
+    val refreshResult by viewModel.refreshResult.collectAsState()
 
     var page by remember { mutableStateOf(Page.GAMES) }
     var sort by remember { mutableStateOf(SortMode.NAME) }
@@ -256,7 +254,6 @@ fun LauncherScreen(viewModel: LauncherViewModel) {
                 when (page) {
                     Page.TOOLS -> ToolsPage(viewModel, hiddenCount)
                     Page.COLORS -> ColorsPage(apps, tileColors)
-                    Page.ASSISTANT -> AssistantPage(viewModel)
                     else -> LazyVerticalGrid(
                         columns = GridCells.Adaptive(if (tab.wide) 190.dp else 120.dp),
                         modifier = Modifier.weight(1f),
