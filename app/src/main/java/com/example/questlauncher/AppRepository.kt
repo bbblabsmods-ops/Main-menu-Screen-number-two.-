@@ -117,26 +117,36 @@ class AppRepository(private val context: Context) {
     private fun fallbackName(pkg: String): String =
         pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
 
-    /** True when the icon is empty or a single flat colour (what Quest gives us for most games). */
+    /**
+     * True when the icon is empty, a single flat colour (what Quest gives us for most games),
+     * or almost completely see-through, so a coloured letter tile is shown instead of nothing.
+     */
     private fun isBlank(b: Bitmap): Boolean {
         val w = b.width
         val h = b.height
         var first: Int? = null
         var visible = 0
+        var total = 0
+        var differs = false
         for (y in 0 until h step 16) {
             for (x in 0 until w step 16) {
+                total++
                 val p = b.getPixel(x, y)
                 if ((p ushr 24) > 20) visible++
-                if (first == null) first = p
-                else if (p != first) {
+                if (first == null) {
+                    first = p
+                } else if (!differs && p != first) {
                     val dr = Math.abs(((p shr 16) and 255) - ((first shr 16) and 255))
                     val dg = Math.abs(((p shr 8) and 255) - ((first shr 8) and 255))
                     val db = Math.abs((p and 255) - (first and 255))
-                    if (dr + dg + db > 24) return false
+                    if (dr + dg + db > 24) differs = true
                 }
             }
         }
-        return true
+        if (total == 0) return true
+        // Fewer than 15% of the sampled points have any colour: the icon is basically invisible.
+        if (visible * 100 < total * 15) return true
+        return !differs
     }
 
     fun launch(app: AppEntry) {
